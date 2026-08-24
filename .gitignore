@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.dev
+.env.prod
+.env.testing
+npm-debug.log*
+coverage/
+*.log
+.DS_Store
+
+# Uploaded listing media. Local disk is the dev/single-box store (see
+# middleware/upload.js) — these are user content, not source.
+uploads/
