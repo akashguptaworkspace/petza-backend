@@ -1,12 +1,11 @@
 import request from 'supertest';
 
 import { app } from '../src/app.js';
-
-const apiPrefix = process.env.API_PREFIX || '/api/v1';
+import { API_PREFIX } from '../src/routes/index.js';
 
 describe('GET /api/v1/health', () => {
   it('returns a healthy success envelope', async () => {
-    const res = await request(app).get(`${apiPrefix}/health`);
+    const res = await request(app).get(`${API_PREFIX}/health`);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -16,7 +15,7 @@ describe('GET /api/v1/health', () => {
 
 describe('GET /api/v1/unknown-route', () => {
   it('returns a 404 error envelope', async () => {
-    const res = await request(app).get(`${apiPrefix}/unknown-route`);
+    const res = await request(app).get(`${API_PREFIX}/unknown-route`);
 
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);

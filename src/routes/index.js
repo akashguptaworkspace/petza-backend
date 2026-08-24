@@ -10,6 +10,7 @@ import { partnerRouter } from './partner/index.js';
 import { authRouter } from './shared/auth.routes.js';
 import { seedRouter } from './system/seed.routes.js';
 
+export const API_PREFIX = '/api/v1';
 export const apiRouter = Router();
 
 apiRouter.get('/health', (req, res) => {

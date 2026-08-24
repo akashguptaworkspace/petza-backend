@@ -10,10 +10,9 @@ import { notFound } from './middleware/notFound.js';
 import { apiRateLimiter } from './middleware/rateLimiter.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { UPLOAD_ROOT } from './middleware/upload.js';
-import { apiRouter } from './routes/index.js';
+import { API_PREFIX, apiRouter } from './routes/index.js';
 
 const corsOrigin = (process.env.CORS_ORIGIN || '*').split(',').map((origin) => origin.trim());
-const apiPrefix = process.env.API_PREFIX || '/api/v1';
 
 export const app = express();
 
@@ -48,13 +47,13 @@ app.use(apiRateLimiter);
 app.get('/', (req, res) => res.json({ name: 'petza-backend', status: 'ok' }));
 
 /**
- * Uploaded listing media. Outside `apiPrefix` on purpose — these are files,
+ * Uploaded listing media. Outside `API_PREFIX` on purpose — these are files,
  * not API resources, and the URL stored on a listing should stay stable if
  * the API is ever versioned again.
  */
 app.use('/uploads', express.static(UPLOAD_ROOT, { maxAge: '7d', fallthrough: true }));
 
-app.use(apiPrefix, apiRouter);
+app.use(API_PREFIX, apiRouter);
 
 app.use(notFound);
 app.use(errorHandler);

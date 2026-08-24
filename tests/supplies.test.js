@@ -2,8 +2,9 @@ import request from 'supertest';
 
 import { app } from '../src/app.js';
 import { sequelize } from '../src/database/index.js';
+import { API_PREFIX } from '../src/routes/index.js';
 
-const base = process.env.API_PREFIX || '/api/v1';
+const base = API_PREFIX;
 
 /** The kennel demo store, which has to opt into supplies before any of this exists for it. */
 const SELLER = { email: 'partner@petza.app', password: 'partner123' };
