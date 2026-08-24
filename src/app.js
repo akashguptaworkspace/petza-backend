@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+import { join } from 'path';
+
 import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
@@ -13,6 +15,7 @@ import { UPLOAD_ROOT } from './middleware/upload.js';
 import { API_PREFIX, apiRouter } from './routes/index.js';
 
 const corsOrigin = (process.env.CORS_ORIGIN || '*').split(',').map((origin) => origin.trim());
+const PUBLIC_ROOT = join(process.cwd(), 'public');
 
 export const app = express();
 
@@ -52,6 +55,7 @@ app.get('/', (req, res) => res.json({ name: 'petza-backend', status: 'ok' }));
  * the API is ever versioned again.
  */
 app.use('/uploads', express.static(UPLOAD_ROOT, { maxAge: '7d', fallthrough: true }));
+app.use(express.static(PUBLIC_ROOT, { maxAge: '1h', fallthrough: true }));
 
 app.use(API_PREFIX, apiRouter);
 
