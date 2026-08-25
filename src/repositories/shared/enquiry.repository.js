@@ -14,6 +14,27 @@ const PET_LISTING_INCLUDE = {
 
 const CUSTOMER_INCLUDE = { model: User, as: 'customer', attributes: ['id', 'name', 'phone', 'email'] };
 const STORE_INCLUDE = { model: Store, as: 'store', attributes: ['id', 'name', 'city'] };
+/** The counterpart on a thread about a privately-listed pet — the store's opposite number. */
+const OWNER_INCLUDE = { model: User, as: 'individualOwner', attributes: ['id', 'name'] };
+
+/**
+ * Everyone a customer-app read might need to name. Both possible sellers
+ * (exactly one resolves, matching whichever column owns the thread) plus
+ * the buyer — because the same rows are now read by *both* ends when the
+ * seller is an individual, and a private seller's inbox has to show who is
+ * asking, not their own name.
+ */
+const CUSTOMER_SIDE_INCLUDE = [PET_LISTING_INCLUDE, STORE_INCLUDE, OWNER_INCLUDE, CUSTOMER_INCLUDE];
+
+/**
+ * Either end of a privately-sold pet. A user is a party to a thread when
+ * they opened it OR when they own the listing it is about — the customer
+ * app serves both, since a private seller is an ordinary account with no
+ * store and no partner login.
+ */
+function partyToThread(userId) {
+  return { [Op.or]: [{ customerId: userId }, { individualOwnerId: userId }] };
+}
 
 /** Only place `enquiries` / `messages` are queried — services never touch the models directly. */
 export const enquiryRepository = {
@@ -46,11 +67,11 @@ export const enquiryRepository = {
     });
   },
 
-  /** The customer's own "my conversations" list. */
-  findAndCountForCustomer({ customerId, limit, offset }) {
+  /** "My conversations" — threads this user opened, and threads about pets they listed. */
+  findAndCountForCustomer({ userId, limit, offset }) {
     return Enquiry.findAndCountAll({
-      where: { customerId },
-      include: [PET_LISTING_INCLUDE, STORE_INCLUDE],
+      where: partyToThread(userId),
+      include: CUSTOMER_SIDE_INCLUDE,
       order: [['lastMessageAt', 'DESC']],
       limit,
       offset,
@@ -62,9 +83,21 @@ export const enquiryRepository = {
     return Enquiry.findOne({ where: { id, storeId }, include: [PET_LISTING_INCLUDE, CUSTOMER_INCLUDE] });
   },
 
-  /** Same, scoped to the customer who opened it. */
-  findByIdForCustomer({ id, customerId }) {
-    return Enquiry.findOne({ where: { id, customerId }, include: [PET_LISTING_INCLUDE, STORE_INCLUDE] });
+  /** Same, scoped to either party — the buyer who opened it or the individual who owns the listing. */
+  findByIdForCustomer({ id, userId }) {
+    return Enquiry.findOne({ where: { id, ...partyToThread(userId) }, include: CUSTOMER_SIDE_INCLUDE });
+  },
+
+  /** Does this thread belong to this store? The partner-side half of the socket server's room check. */
+  async isThreadOfStore({ enquiryId, storeId }) {
+    const count = await Enquiry.count({ where: { id: enquiryId, storeId } });
+    return count > 0;
+  },
+
+  /** Is this user a party to this thread? Used by the socket server before it lets a connection into a thread room. */
+  async isPartyToThread({ enquiryId, userId }) {
+    const count = await Enquiry.count({ where: { id: enquiryId, ...partyToThread(userId) } });
+    return count > 0;
   },
 
   findById(id, options) {
@@ -128,17 +161,55 @@ export const enquiryRepository = {
     return Object.fromEntries(rows.map((row) => [row.enquiryId, Number(row.count)]));
   },
 
-  /** Same, from the customer's side — unread-from-the-customer's-view count per enquiry id. */
-  async countUnreadForCustomerByEnquiryIds(enquiryIds) {
+  /**
+   * Unread count per enquiry id, from the point of view of whoever is NOT
+   * `senderType`. Takes the sender rather than assuming 'PARTNER', because
+   * a private seller reading their own inbox is unread on the CUSTOMER's
+   * messages — the same rows, counted from the other end.
+   */
+  async countUnreadByEnquiryIds(enquiryIds, senderType) {
     if (!enquiryIds.length) return {};
 
     const rows = await Message.findAll({
-      where: { enquiryId: { [Op.in]: enquiryIds }, senderType: 'PARTNER', readAt: null },
+      where: { enquiryId: { [Op.in]: enquiryIds }, senderType, readAt: null },
       attributes: ['enquiryId', [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count']],
       group: ['enquiryId'],
       raw: true,
     });
 
     return Object.fromEntries(rows.map((row) => [row.enquiryId, Number(row.count)]));
+  },
+
+  /**
+   * How many messages buyers have sent about each listing — what an owner's
+   * "N messages" counter reads.
+   *
+   * Counts CUSTOMER-sent messages only: a seller's own replies are not
+   * enquiries they received, and including them would make the number climb
+   * every time they answered one.
+   */
+  async countCustomerMessagesByListingIds(petListingIds) {
+    if (!petListingIds.length) return {};
+
+    const rows = await Message.findAll({
+      where: { senderType: 'CUSTOMER' },
+      include: [
+        {
+          model: Enquiry,
+          as: 'enquiry',
+          attributes: [],
+          where: { petListingId: { [Op.in]: petListingIds } },
+          required: true,
+        },
+      ],
+      attributes: [
+        [db.sequelize.col('enquiry.pet_listing_id'), 'petListingId'],
+        [db.sequelize.fn('COUNT', db.sequelize.col('Message.id')), 'count'],
+      ],
+      group: [db.sequelize.col('enquiry.pet_listing_id')],
+      raw: true,
+    });
+
+    return Object.fromEntries(rows.map((row) => [row.petListingId, Number(row.count)]));
   },
 };

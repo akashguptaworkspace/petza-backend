@@ -1,9 +1,13 @@
 import { Router } from 'express';
 
 import { authenticate } from '../../middleware/authenticate.js';
+import { customerAddressesRouter } from './addresses.routes.js';
 import { customerEnquiriesRouter } from './enquiries.routes.js';
+import { customerListingsRouter } from './listings.routes.js';
 import { customerPetsRouter } from './pets.routes.js';
+import { customerPlacesRouter } from './places.routes.js';
 import { customerStoresRouter } from './stores.routes.js';
+import { customerWishlistRouter } from './wishlist.routes.js';
 
 /**
  * Public / customer-context surface. Mounted with NO prefix in
@@ -31,5 +35,17 @@ customerRouter.use('/pets', customerPetsRouter);
 /** The approved-partner store directory. Open to guests for the same reason. */
 customerRouter.use('/stores', customerStoresRouter);
 
+/** City search for the location picker. Open to guests — it's reachable before sign-in. */
+customerRouter.use('/places', customerPlacesRouter);
+
 /** "Message the seller" and the customer's own conversation list — signed-in only, gated inside the router itself. */
 customerRouter.use('/enquiries', authenticate, customerEnquiriesRouter);
+
+/** The customer's saved pets and stores — signed-in only, gated here like /enquiries. */
+customerRouter.use('/wishlist', authenticate, customerWishlistRouter);
+
+/** Saved delivery / handover addresses — signed-in only, scoped to the token's user. */
+customerRouter.use('/addresses', authenticate, customerAddressesRouter);
+
+/** A customer listing their own pet to sell or rehome — signed-in only, ownership is the token's user. */
+customerRouter.use('/listings', authenticate, customerListingsRouter);

@@ -156,4 +156,31 @@ export const storeCatalogService = {
 
     return toPublicDto(store, petCounts[store.id] ?? 0);
   },
+
+  /**
+   * The stores behind a set of ids, in the caller's own id order — backs
+   * the wishlist, which owns the ordering (most recently saved first) and
+   * only knows ids.
+   *
+   * Ids whose store is no longer publicly visible are absent from the
+   * result, deliberately: a suspended store drops off the wishlist rather
+   * than rendering a card that leads nowhere.
+   */
+  async listPublicByIds(ids) {
+    const stores = await storeRepository.findPublicByIds({
+      ids,
+      statuses: PubliclyVisibleStoreStatuses,
+    });
+
+    // One grouped query for the whole set, same as listPublic.
+    const petCounts = await petListingRepository.countPublicByStoreIds({
+      storeIds: stores.map((store) => store.id),
+      statuses: PubliclyVisiblePetStatuses,
+    });
+
+    const byId = new Map(stores.map((store) => [store.id, store]));
+    return ids
+      .filter((id) => byId.has(id))
+      .map((id) => toPublicDto(byId.get(id), petCounts[id] ?? 0));
+  },
 };

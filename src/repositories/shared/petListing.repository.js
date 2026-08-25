@@ -2,7 +2,7 @@ import { Op } from 'sequelize';
 
 import db from '../../models/index.js';
 
-const { PetListing, PetListingMedia, Store } = db;
+const { PetAttribute, PetAttributeOption, PetListing, PetListingAttributeValue, PetListingColor, PetListingMedia, PetType, Store, User } = db;
 
 /** Media always comes back in display order, main photo first, so no caller has to sort it. */
 const MEDIA_INCLUDE = { model: PetListingMedia, as: 'media' };
@@ -17,6 +17,44 @@ const STORE_INCLUDE = {
   as: 'store',
   attributes: ['id', 'name', 'slug', 'city', 'isVerified'],
 };
+
+/**
+ * The person shown on an individually-listed pet. Name only — never the
+ * whole user row, which carries their email and phone. A rehoming listing
+ * is public; its owner's contact details are not, and reaching them is
+ * what the enquiry thread is for.
+ */
+const OWNER_INCLUDE = {
+  model: User,
+  as: 'individualOwner',
+  // `createdAt` backs the app's "Member since March 2026" line — the only
+  // trust signal a private seller has, since there is no individual KYC.
+  attributes: ['id', 'name', 'createdAt'],
+};
+
+/** Every public read carries both possible sellers; exactly one resolves. */
+/**
+ * The normalised side of a listing, eager-loaded on every read.
+ *
+ * Carried alongside the legacy string columns rather than instead of them:
+ * the DTO now returns ids AND values, so a client can move to ids at its own
+ * pace instead of every app having to change on the same deploy.
+ */
+const REFERENCE_INCLUDE = [
+  { model: PetType, as: 'petTypeRef' },
+  { model: PetAttributeOption, as: 'breedOption' },
+  { model: PetListingColor, as: 'colorRefs', include: [{ model: PetAttributeOption, as: 'option' }] },
+  {
+    model: PetListingAttributeValue,
+    as: 'attributeValues',
+    include: [
+      { model: PetAttribute, as: 'attribute' },
+      { model: PetAttributeOption, as: 'option' },
+    ],
+  },
+];
+
+const PUBLIC_INCLUDE = [MEDIA_INCLUDE, STORE_INCLUDE, OWNER_INCLUDE, ...REFERENCE_INCLUDE];
 
 /** Only place `pet_listings` / `pet_listing_media` are queried. */
 export const petListingRepository = {
@@ -40,7 +78,7 @@ export const petListingRepository = {
 
     return PetListing.findAndCountAll({
       where,
-      include: [MEDIA_INCLUDE],
+      include: [MEDIA_INCLUDE, ...REFERENCE_INCLUDE],
       order: [['createdAt', 'DESC'], ...MEDIA_ORDER],
       limit,
       offset,
@@ -53,9 +91,66 @@ export const petListingRepository = {
     return PetListing.findOne({ where: { id, storeId }, include: [MEDIA_INCLUDE], order: MEDIA_ORDER });
   },
 
-  /** The public catalogue. `statuses` is the caller's business — this never assumes which are visible. */
-  findAndCountPublic({ statuses, petType, breed, gender, size, minPrice, maxPrice, search, limit, offset }) {
+  /**
+   * The public catalogue. `statuses` is the caller's business — this never
+   * assumes which are visible.
+   *
+   * `excludeOwnerId` drops the viewer's own listings. That is what keeps
+   * the Adopt / Rehome feed from showing someone the pet they are trying
+   * to rehome as though it were a pet they could take in.
+   */
+  findAndCountPublic({
+    statuses,
+    listingType,
+    excludeOwnerId,
+    individualOnly,
+    city,
+    state,
+    petType,
+    breed,
+    gender,
+    size,
+    minPrice,
+    maxPrice,
+    search,
+    limit,
+    offset,
+  }) {
     const where = { status: { [Op.in]: statuses } };
+    if (listingType) where.listingType = listingType;
+    if (individualOnly) where.individualOwnerId = { [Op.ne]: null };
+    if (excludeOwnerId) {
+      // `Op.ne` alone would also drop every partner listing, whose
+      // individualOwnerId is NULL and so compares as unknown, not true.
+      where[Op.and] = [
+        ...(where[Op.and] ?? []),
+        { [Op.or]: [{ individualOwnerId: null }, { individualOwnerId: { [Op.ne]: excludeOwnerId } }] },
+      ];
+    }
+    /**
+     * A listing is "in" a place if its own column says so (individuals) or
+     * its store's does (partners) — the same either/or `locationOf` resolves
+     * for the DTO, expressed in SQL so the filter and the label can never
+     * disagree.
+     *
+     * `$store.x$` reaches into the joined table; `subQuery: false` below is
+     * what makes that legal alongside a LIMIT.
+     *
+     * State is the wider net and the one the feed opens on; city narrows
+     * within it. Both may be sent — a city inside a state simply intersects.
+     */
+    if (state) {
+      where[Op.and] = [
+        ...(where[Op.and] ?? []),
+        { [Op.or]: [{ state }, { '$store.state$': state }] },
+      ];
+    }
+    if (city) {
+      where[Op.and] = [
+        ...(where[Op.and] ?? []),
+        { [Op.or]: [{ city }, { '$store.city$': city }] },
+      ];
+    }
     if (petType) where.petType = petType;
     if (breed) where.breed = breed;
     if (gender) where.gender = gender;
@@ -72,10 +167,14 @@ export const petListingRepository = {
 
     return PetListing.findAndCountAll({
       where,
-      include: [MEDIA_INCLUDE, STORE_INCLUDE],
+      include: PUBLIC_INCLUDE,
       order: [['createdAt', 'DESC'], ...MEDIA_ORDER],
       limit,
       offset,
+      // Required for the `$store.city$` reference above to resolve, and
+      // harmless otherwise: the includes are all belongsTo/hasMany on
+      // indexed keys.
+      subQuery: false,
       distinct: true,
     });
   },
@@ -113,8 +212,27 @@ export const petListingRepository = {
   findPublicByStoreId({ storeId, statuses }) {
     return PetListing.findAll({
       where: { storeId, status: { [Op.in]: statuses } },
-      include: [MEDIA_INCLUDE, STORE_INCLUDE],
+      include: PUBLIC_INCLUDE,
       order: [['createdAt', 'DESC'], ...MEDIA_ORDER],
+    });
+  },
+
+  /**
+   * A specific set of public listings, for callers that already hold ids
+   * — the wishlist, which stores ids and needs the listings behind them.
+   *
+   * Deliberately re-applies `statuses` rather than trusting the caller's
+   * ids: a saved listing that has since been sold or archived must drop
+   * out of the wishlist rather than reappear as a card that can't be
+   * bought. Includes the store for the same reason findPublicByStoreId
+   * does — the DTO renders a seller badge from it.
+   */
+  findPublicByIds({ ids, statuses }) {
+    if (ids.length === 0) return Promise.resolve([]);
+    return PetListing.findAll({
+      where: { id: { [Op.in]: ids }, status: { [Op.in]: statuses } },
+      include: PUBLIC_INCLUDE,
+      order: MEDIA_ORDER,
     });
   },
 
@@ -125,7 +243,7 @@ export const petListingRepository = {
         status: { [Op.in]: statuses },
         [Op.or]: [{ id: idOrSlug }, { slug: idOrSlug }],
       },
-      include: [MEDIA_INCLUDE, STORE_INCLUDE],
+      include: PUBLIC_INCLUDE,
       order: MEDIA_ORDER,
     });
   },
@@ -144,15 +262,50 @@ export const petListingRepository = {
    * `excludeId` is the edit flow's own: saving a listing without renaming it
    * must not collide with itself.
    */
-  findLiveByName({ storeId, name, excludeId }, options) {
+  /** Scoped to whichever owner is publishing — a store, or an individual. */
+  findLiveByName({ storeId, individualOwnerId, name, excludeId }, options) {
     return PetListing.findOne({
       where: {
-        storeId,
+        ...(storeId ? { storeId } : { individualOwnerId }),
         name,
         status: { [Op.ne]: 'ARCHIVED' },
         ...(excludeId ? { id: { [Op.ne]: excludeId } } : {}),
       },
       ...options,
+    });
+  },
+
+  /**
+   * A customer's own listings — the "My Listings" screen. Owner-scoped, so
+   * there is no way to read another person's listings through it, exactly
+   * like findAndCountForStore.
+   *
+   * ARCHIVED is excluded unless asked for, same trash-folder reasoning.
+   */
+  findAndCountForOwner({ individualOwnerId, status, petType, search, limit, offset }) {
+    const where = { individualOwnerId };
+    if (status) where.status = status;
+    else where.status = { [Op.ne]: 'ARCHIVED' };
+    if (petType) where.petType = petType;
+    if (search) {
+      where[Op.or] = [{ name: { [Op.like]: `%${search}%` } }, { breed: { [Op.like]: `%${search}%` } }];
+    }
+
+    return PetListing.findAndCountAll({
+      where,
+      include: [MEDIA_INCLUDE, ...REFERENCE_INCLUDE],
+      order: [['createdAt', 'DESC'], ...MEDIA_ORDER],
+      limit,
+      offset,
+      distinct: true,
+    });
+  },
+
+  findByIdForOwner({ id, individualOwnerId }) {
+    return PetListing.findOne({
+      where: { id, individualOwnerId },
+      include: [MEDIA_INCLUDE, ...REFERENCE_INCLUDE],
+      order: MEDIA_ORDER,
     });
   },
 
@@ -172,5 +325,44 @@ export const petListingRepository = {
   /** Wipes a listing's media rows so an edit can recreate them in the new order/main-photo choice, same as a fresh publish would. */
   deleteMediaForListing(petListingId, options) {
     return PetListingMedia.destroy({ where: { petListingId }, ...options });
+  },
+
+  /**
+   * Bumps a listing's view counter.
+   *
+   * `increment` issues `SET view_count = view_count + 1` — the database does
+   * the arithmetic, so two people opening the same listing at once can't
+   * both read 41 and both write 42.
+   */
+  incrementViewCount(id) {
+    return PetListing.increment('viewCount', { by: 1, where: { id } });
+  },
+
+  /**
+   * Rewrites a listing's normalised choice rows to exactly what was
+   * submitted.
+   *
+   * Replace rather than diff: the client always posts the complete set of
+   * answers it wants the listing to have, the same way it posts the complete
+   * media gallery, so there is nothing to reconcile and a diff would only be
+   * a slower way to reach the same rows.
+   */
+  async replaceChoiceRows({ petListingId, colorOptionIds, attributeChoices }, options) {
+    await PetListingColor.destroy({ where: { petListingId }, ...options });
+    await PetListingAttributeValue.destroy({ where: { petListingId }, ...options });
+
+    if (colorOptionIds.length > 0) {
+      await PetListingColor.bulkCreate(
+        colorOptionIds.map((optionId) => ({ petListingId, optionId })),
+        options
+      );
+    }
+
+    if (attributeChoices.length > 0) {
+      await PetListingAttributeValue.bulkCreate(
+        attributeChoices.map(({ attributeId, optionId }) => ({ petListingId, attributeId, optionId })),
+        options
+      );
+    }
   },
 };

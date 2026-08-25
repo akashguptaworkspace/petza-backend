@@ -4,7 +4,17 @@ import db from '../../models/index.js';
 
 const { PetAttribute, PetAttributeOption } = db;
 
-const OPTION_INCLUDE = { model: PetAttributeOption, as: 'options' };
+/** What the form offers: retired choices are hidden from new listings. */
+const ACTIVE_OPTION_INCLUDE = { model: PetAttributeOption, as: 'options', where: { isActive: true }, required: false };
+
+/**
+ * What validation accepts: every option, retired ones included.
+ *
+ * Wider than the form on purpose — someone editing a listing published
+ * under a breed that has since been retired must be able to save it again
+ * without being told a field they never touched is invalid.
+ */
+const ANY_OPTION_INCLUDE = { model: PetAttributeOption, as: 'options' };
 
 /** Only place `pet_attributes` / `pet_attribute_options` are read. */
 export const petAttributeRepository = {
@@ -25,12 +35,20 @@ export const petAttributeRepository = {
 
     return PetAttribute.findAll({
       where: { [Op.or]: scopes },
-      include: [OPTION_INCLUDE],
+      include: [ACTIVE_OPTION_INCLUDE],
       order: [
         ['displayOrder', 'ASC'],
-        [OPTION_INCLUDE, 'displayOrder', 'ASC'],
+        [ACTIVE_OPTION_INCLUDE, 'displayOrder', 'ASC'],
       ],
     });
+  },
+
+  /** The same attributes, with every option — see `ANY_OPTION_INCLUDE`. Used only to validate a listing being written. */
+  findSchemaForValidation(petType) {
+    const scopes = [{ petType: null }];
+    if (petType) scopes.push({ petType });
+
+    return PetAttribute.findAll({ where: { [Op.or]: scopes }, include: [ANY_OPTION_INCLUDE] });
   },
 
   /** Every pet type that has a CATEGORY section defined — used to tell a caller which animals are fully described. */

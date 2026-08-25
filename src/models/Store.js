@@ -92,6 +92,23 @@ export default (sequelize) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      /** Set alongside `city`; a partner listing inherits all of these. */
+      state: {
+        type: DataTypes.STRING(120),
+        allowNull: true,
+      },
+      pincode: {
+        type: DataTypes.STRING(12),
+        allowNull: true,
+      },
+      latitude: {
+        type: DataTypes.DECIMAL(10, 7),
+        allowNull: true,
+      },
+      longitude: {
+        type: DataTypes.DECIMAL(10, 7),
+        allowNull: true,
+      },
       phone: {
         type: DataTypes.STRING,
         allowNull: true,

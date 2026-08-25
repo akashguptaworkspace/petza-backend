@@ -135,6 +135,19 @@ export const PetType = Object.freeze({
  * ARCHIVED rather than DELETE, for the same reason products are never
  * deleted: enquiries and orders point at listings.
  */
+/**
+ * Sale or rehoming. Independent of WHO listed it — a partner store and an
+ * individual can both publish either, so this never stands in for
+ * ownership (that is `storeId` vs `individualOwnerId`).
+ *
+ * Deliberately not derived from price: a ₹0 SALE listing is a real thing
+ * (the app shows "No adoption fee" for it), so the two would disagree.
+ */
+export const PetListingType = Object.freeze({
+  SALE: 'SALE',
+  ADOPTION: 'ADOPTION',
+});
+
 export const PetListingStatus = Object.freeze({
   AVAILABLE: 'AVAILABLE',
   RESERVED: 'RESERVED',
@@ -240,6 +253,17 @@ export const EnquiryStatus = Object.freeze({
 });
 
 /** Which side of the conversation sent a message. */
+/**
+ * Which end of a thread is reading it. A private seller has no store and no
+ * partner login — they are a customer account that happens to own the
+ * listing — so `/enquiries` serves both ends and every response has to say
+ * which one it was built for.
+ */
+export const EnquiryViewerRole = Object.freeze({
+  BUYER: 'BUYER',
+  SELLER: 'SELLER',
+});
+
 export const MessageSenderType = Object.freeze({
   CUSTOMER: 'CUSTOMER',
   PARTNER: 'PARTNER',

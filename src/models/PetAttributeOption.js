@@ -7,6 +7,10 @@ import { DataTypes, Model } from 'sequelize';
  * `value` is what ends up stored on a listing and never changes; `label`
  * is display text and is free to be reworded, so fixing a typo in "Labrador
  * Retreiver" doesn't orphan every dog already listed under it.
+ *
+ * That was always the intent and is now enforced: `UNIQUE(attribute_id,
+ * value)` makes the value a key an admin panel can rely on, and the listing
+ * write path rejects any choice that isn't in this table.
  */
 export default (sequelize) => {
   class PetAttributeOption extends Model {
@@ -38,6 +42,21 @@ export default (sequelize) => {
         type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0,
+      },
+      /**
+       * Whether the form still offers this choice.
+       *
+       * Retiring a breed sets this false rather than deleting the row —
+       * deletion orphans every listing already published under it, while
+       * this stops it being offered and leaves those listings resolving
+       * their label exactly as before. Validation on write still accepts a
+       * retired value, so editing such a listing doesn't fail on a field
+       * its owner never touched.
+       */
+      isActive: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
       },
     },
     {

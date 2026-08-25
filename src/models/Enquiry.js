@@ -12,6 +12,7 @@ export default (sequelize) => {
     static associate(db) {
       Enquiry.belongsTo(db.User, { as: 'customer', foreignKey: 'customerId' });
       Enquiry.belongsTo(db.Store, { as: 'store', foreignKey: 'storeId' });
+      Enquiry.belongsTo(db.User, { as: 'individualOwner', foreignKey: 'individualOwnerId' });
       Enquiry.belongsTo(db.PetListing, { as: 'petListing', foreignKey: 'petListingId' });
       Enquiry.hasMany(db.Message, { as: 'messages', foreignKey: 'enquiryId' });
     }
@@ -28,10 +29,19 @@ export default (sequelize) => {
         type: DataTypes.UUID,
         allowNull: false,
       },
-      /** Denormalized from petListing.storeId at creation — never taken from a request body. */
+      /**
+       * Denormalized from petListing.storeId at creation — never taken from
+       * a request body. Null when the pet was listed by a person; exactly
+       * one of this and `individualOwnerId` is set.
+       */
       storeId: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
+      },
+      /** Denormalized from petListing.individualOwnerId, same rule as storeId. */
+      individualOwnerId: {
+        type: DataTypes.UUID,
+        allowNull: true,
       },
       petListingId: {
         type: DataTypes.UUID,

@@ -113,6 +113,27 @@ export const storeRepository = {
     });
   },
 
+  /**
+   * A specific set of public stores, for callers that already hold ids —
+   * the wishlist, which stores ids and needs the stores behind them.
+   *
+   * Re-applies `statuses` and the named-store rule for the same reason
+   * findPublicByIds does on pet listings: a store saved while ACTIVE that
+   * has since been suspended must drop out of the wishlist, not come back
+   * as a card leading to a 404.
+   */
+  findPublicByIds({ ids, statuses }) {
+    if (ids.length === 0) return Promise.resolve([]);
+    return Store.findAll({
+      where: {
+        id: { [Op.in]: ids },
+        status: { [Op.in]: statuses },
+        name: { [Op.ne]: null },
+      },
+      include: PROFILE_INCLUDE,
+    });
+  },
+
   /** One public store, by id or slug — a shared link uses the slug, an in-app tap uses the id. */
   findOnePublic({ idOrSlug, statuses }) {
     return Store.findOne({

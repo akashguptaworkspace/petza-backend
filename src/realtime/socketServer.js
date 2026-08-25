@@ -1,6 +1,7 @@
 import { Server } from 'socket.io';
 
 import { Context } from '../config/constants.js';
+import { enquiryRepository } from '../repositories/shared/enquiry.repository.js';
 import { storeRepository } from '../repositories/shared/store.repository.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { logger } from '../utils/logger.js';
@@ -139,18 +140,25 @@ export function initSocketServer(httpServer) {
     }
 
     /**
-     * `enquiryId` plus a claim of who owns it — checked against the
-     * connection's own identity, never trusted from the payload alone, the
-     * same "resolve from the token, not the request" rule `requireCapability`
-     * follows for REST.
+     * Joins one thread room, after checking the connection is actually a
+     * party to that thread.
+     *
+     * This used to compare the payload's `customerId`/`storeId` against the
+     * connection's own identity, which only proved the caller had correctly
+     * stated who *they* were — never that the enquiry was theirs. Any
+     * signed-in account could join `enquiry:<someone else's id>` by passing
+     * its own id and then receive that conversation's messages live. The
+     * membership question is about the row, so it is answered from the row.
      */
-    socket.on('enquiry:join', async ({ enquiryId, customerId, storeId }) => {
-      const isOwnThread =
-        (identity.context === Context.CUSTOMER && identity.customerId === customerId) ||
-        (identity.context === Context.PARTNER && identity.storeId === storeId);
+    socket.on('enquiry:join', async ({ enquiryId }) => {
+      if (!enquiryId) return;
 
-      if (!enquiryId || !isOwnThread) return;
-      socket.join(`enquiry:${enquiryId}`);
+      const isParty =
+        identity.context === Context.PARTNER
+          ? await enquiryRepository.isThreadOfStore({ enquiryId, storeId: identity.storeId })
+          : await enquiryRepository.isPartyToThread({ enquiryId, userId: identity.customerId });
+
+      if (isParty) socket.join(`enquiry:${enquiryId}`);
     });
 
     socket.on('enquiry:leave', ({ enquiryId }) => {
@@ -189,19 +197,27 @@ export function initSocketServer(httpServer) {
  * nobody is in any of these rooms (app closed), the row is still there the
  * next time either side fetches the thread; this only saves them the wait.
  */
-export function emitEnquiryMessage(enquiryId, { storeId, customerId }, payload) {
-  io?.to([`enquiry:${enquiryId}`, `store:${storeId}`, `customer:${customerId}`]).emit('enquiry:message', payload);
+export function emitEnquiryMessage(enquiryId, { storeId, customerId, individualOwnerId }, payload) {
+  const rooms = [`enquiry:${enquiryId}`, `customer:${customerId}`];
+  // Exactly one of these owns the selling side. A private seller is a
+  // customer account, so their identity room is `customer:<id>` — without
+  // it their badge and inbox only updated when they pulled to refresh.
+  if (storeId) rooms.push(`store:${storeId}`);
+  if (individualOwnerId) rooms.push(`customer:${individualOwnerId}`);
+
+  io?.to(rooms).emit('enquiry:message', payload);
 }
 
 /**
- * Announces a brand-new thread to the store's room — the one case
+ * Announces a brand-new thread to the seller's identity room — the one case
  * `emitEnquiryMessage` can't cover, since nobody has joined `enquiry:<id>`
  * for a thread that didn't exist a moment ago. The inbox reacts by
  * refetching its list rather than trying to splice a full DTO together
  * from a socket payload alone.
  */
-export function emitEnquiryCreated(storeId, payload) {
-  io?.to(`store:${storeId}`).emit('enquiry:created', payload);
+export function emitEnquiryCreated({ storeId, individualOwnerId }, payload) {
+  const room = storeId ? `store:${storeId}` : individualOwnerId ? `customer:${individualOwnerId}` : null;
+  if (room) io?.to(room).emit('enquiry:created', payload);
 }
 
 /** Fans a status/read-state change (not a new message) out to the thread — e.g. the partner opened it and the customer's ticks should go blue live. */

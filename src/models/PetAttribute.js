@@ -13,6 +13,7 @@ import { PetAttributeInputType, PetAttributeSection } from '../config/constants.
 export default (sequelize) => {
   class PetAttribute extends Model {
     static associate(db) {
+      PetAttribute.belongsTo(db.PetType, { as: 'petTypeRef', foreignKey: 'petTypeId' });
       PetAttribute.hasMany(db.PetAttributeOption, { as: 'options', foreignKey: 'attributeId' });
     }
   }
@@ -25,6 +26,7 @@ export default (sequelize) => {
         primaryKey: true,
       },
       /** STRING, not ENUM — a new pet type should be a seed change, not an ALTER TABLE. */
+      petTypeId: { type: DataTypes.UUID, allowNull: true },
       petType: {
         type: DataTypes.STRING(32),
         allowNull: true,

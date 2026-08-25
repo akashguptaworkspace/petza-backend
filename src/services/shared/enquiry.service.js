@@ -1,4 +1,4 @@
-import { EnquiryStatus, MessageSenderType } from '../../config/constants.js';
+import { EnquiryStatus, EnquiryViewerRole, MessageSenderType } from '../../config/constants.js';
 import { enquiryRepository } from '../../repositories/shared/enquiry.repository.js';
 import { petListingRepository } from '../../repositories/shared/petListing.repository.js';
 import { emitEnquiryCreated, emitEnquiryMessage, emitEnquiryUpdated, isCustomerOnline } from '../../realtime/socketServer.js';
@@ -68,27 +68,97 @@ function toPartnerThreadDto(enquiry, messages) {
   };
 }
 
-/** The customer app's inbox row and thread use the mirror image of the same shape — store instead of pet-as-headline, no unread math the partner side needs. */
-function toCustomerInboxDto(enquiry, { unreadCount, lastMessage }) {
+/**
+ * Which end of a thread is looking at it. A private seller is an ordinary
+ * customer account — no store, no partner login — so both ends of a
+ * user-to-user conversation are served by the same `/enquiries` surface,
+ * and every DTO below has to be told which one is asking.
+ */
+function viewerRoleOf(enquiry, userId) {
+  return enquiry.individualOwnerId && enquiry.individualOwnerId === userId
+    ? EnquiryViewerRole.SELLER
+    : EnquiryViewerRole.BUYER;
+}
+
+/**
+ * Who owns the selling side of a thread. A thread hangs off a store OR off
+ * the person who listed the pet, so this resolves whichever owns it.
+ *
+ * `storeId` stays null for a private seller rather than being filled with
+ * the user's id: the app routes a store id to `/store/[id]`, and pointing
+ * that at a user would 404. `sellerType` is what a client branches on.
+ */
+function sellerOf(enquiry) {
+  if (enquiry.individualOwnerId) {
+    return {
+      sellerType: 'INDIVIDUAL',
+      sellerId: enquiry.individualOwnerId,
+      sellerName: enquiry.individualOwner?.name ?? 'Seller',
+      storeId: null,
+    };
+  }
+  return {
+    sellerType: 'STORE',
+    sellerId: enquiry.storeId,
+    sellerName: enquiry.store?.name ?? 'Seller',
+    storeId: enquiry.storeId,
+  };
+}
+
+/**
+ * The other party, from the viewer's side. A buyer sees the seller; a
+ * private seller sees the buyer. Without this the seller's own inbox
+ * listed their own name against every conversation.
+ */
+function counterpartOf(enquiry, viewerRole) {
+  if (viewerRole === EnquiryViewerRole.SELLER) {
+    return {
+      counterpartType: 'CUSTOMER',
+      counterpartId: enquiry.customerId,
+      counterpartName: enquiry.customer?.name ?? 'Petza customer',
+    };
+  }
+
+  const seller = sellerOf(enquiry);
+  return {
+    counterpartType: seller.sellerType,
+    counterpartId: seller.sellerId,
+    counterpartName: seller.sellerName,
+  };
+}
+
+/** Was the newest message written by whoever is reading this row? Drives the "You: " prefix. */
+function lastMessageIsMine(enquiry, viewerRole) {
+  const fromSellerSide = enquiry.lastMessageFromPartner ?? false;
+  return viewerRole === EnquiryViewerRole.SELLER ? fromSellerSide : !fromSellerSide;
+}
+
+function toCustomerInboxDto(enquiry, { unreadCount, lastMessage, viewerRole }) {
   return {
     id: enquiry.id,
-    storeId: enquiry.storeId,
-    storeName: enquiry.store?.name ?? 'Seller',
+    viewerRole,
+    ...sellerOf(enquiry),
+    ...counterpartOf(enquiry, viewerRole),
+    // Kept so existing clients keep rendering a name; `counterpartName` is
+    // the one to read going forward.
+    storeName: sellerOf(enquiry).sellerName,
     petId: enquiry.petListingId,
     petName: enquiry.petListing?.name ?? 'Listing removed',
     petImageUrl: mainPhotoUrl(enquiry.petListing),
     lastMessage: lastMessage?.text ?? '',
-    lastMessageFromCustomer: !enquiry.lastMessageFromPartner,
+    lastMessageFromMe: lastMessageIsMine(enquiry, viewerRole),
     lastMessageAt: enquiry.lastMessageAt,
     unreadCount,
   };
 }
 
-function toCustomerThreadDto(enquiry, messages) {
+function toCustomerThreadDto(enquiry, messages, viewerRole) {
   return {
     id: enquiry.id,
-    storeId: enquiry.storeId,
-    storeName: enquiry.store?.name ?? 'Seller',
+    viewerRole,
+    ...sellerOf(enquiry),
+    ...counterpartOf(enquiry, viewerRole),
+    storeName: sellerOf(enquiry).sellerName,
     pet: {
       id: enquiry.petListingId,
       name: enquiry.petListing?.name ?? 'Listing removed',
@@ -96,14 +166,25 @@ function toCustomerThreadDto(enquiry, messages) {
       priceInInr: enquiry.petListing?.priceInInr ?? 0,
       status: enquiry.petListing?.status ?? 'ARCHIVED',
     },
-    messages: messages.map(toMessageDto),
+    messages: messages.map((message) => toMessageDto(message, viewerRole)),
   };
 }
 
-function toMessageDto(message) {
+function toMessageDto(message, viewerRole) {
   const fromPartner = message.senderType === MessageSenderType.PARTNER;
   return {
     id: message.id,
+    /**
+     * Whether the *reader* wrote this. `fromPartner` alone can't answer
+     * that any more: on a user-to-user thread the seller side is also a
+     * customer account, so their own replies come back `fromPartner: true`
+     * and a bubble keyed on it would render everything they said as if the
+     * other person had said it.
+     *
+     * Undefined when no viewer is in scope (the partner app's own DTO),
+     * which is exactly when `fromPartner` is unambiguous on its own.
+     */
+    fromMe: viewerRole ? (viewerRole === EnquiryViewerRole.SELLER) === fromPartner : undefined,
     text: message.text,
     sentAt: message.createdAt,
     fromPartner,
@@ -165,8 +246,17 @@ export const enquiryService = {
       const isNew = !thread;
 
       if (!thread) {
+        // Whichever side owns the listing owns the thread. Both are read
+        // off the listing, never from the request — a client cannot open a
+        // conversation against a store or a person of its choosing.
         thread = await enquiryRepository.create(
-          { customerId, storeId: listing.storeId, petListingId: listing.id, status: EnquiryStatus.NEW },
+          {
+            customerId,
+            storeId: listing.storeId ?? null,
+            individualOwnerId: listing.individualOwnerId ?? null,
+            petListingId: listing.id,
+            status: EnquiryStatus.NEW,
+          },
           { transaction }
         );
       }
@@ -187,15 +277,18 @@ export const enquiryService = {
 
     if (isNewThread) {
       // No socket has joined `enquiry:<id>` yet for a thread that didn't
-      // exist a moment ago — the store-wide room is what reaches the
-      // partner's inbox instead. An existing thread's message still also
-      // goes to `emitEnquiryMessage` below, exactly as any other reply does.
-      emitEnquiryCreated(enquiry.storeId, { enquiryId: enquiry.id });
+      // exist a moment ago — the seller's identity room is what reaches
+      // their inbox instead. An existing thread's message still also goes
+      // to `emitEnquiryMessage` below, exactly as any other reply does.
+      emitEnquiryCreated(
+        { storeId: enquiry.storeId, individualOwnerId: enquiry.individualOwnerId },
+        { enquiryId: enquiry.id }
+      );
     }
 
     emitEnquiryMessage(
       enquiry.id,
-      { storeId: enquiry.storeId, customerId: enquiry.customerId },
+      { storeId: enquiry.storeId, customerId: enquiry.customerId, individualOwnerId: enquiry.individualOwnerId },
       toLiveMessagePayload(enquiry.id, message)
     );
     emitEnquiryUpdated(enquiry.id, { id: enquiry.id, status: enquiry.status, lastMessageAt: message.createdAt });
@@ -257,7 +350,7 @@ export const enquiryService = {
 
     emitEnquiryMessage(
       enquiryId,
-      { storeId: enquiry.storeId, customerId: enquiry.customerId },
+      { storeId: enquiry.storeId, customerId: enquiry.customerId, individualOwnerId: enquiry.individualOwnerId },
       toLiveMessagePayload(enquiryId, message)
     );
     emitEnquiryUpdated(enquiryId, { id: enquiryId, status: enquiry.status, lastMessageAt: message.createdAt });
@@ -298,61 +391,104 @@ export const enquiryService = {
 
   // ---- Customer side ----
 
-  async listForCustomer({ customerId, page = 1, limit = 20 }) {
+  /**
+   * "My conversations" — both the threads this user opened as a buyer and
+   * the threads other people opened about pets they listed. One list, since
+   * a private seller has no separate inbox to send them to.
+   */
+  async listForCustomer({ userId, page = 1, limit = 20 }) {
     const offset = (page - 1) * limit;
-    const { rows, count } = await enquiryRepository.findAndCountForCustomer({ customerId, limit, offset });
+    const { rows, count } = await enquiryRepository.findAndCountForCustomer({ userId, limit, offset });
 
-    const unreadByEnquiry = await enquiryRepository.countUnreadForCustomerByEnquiryIds(rows.map((row) => row.id));
+    const roleByEnquiry = Object.fromEntries(rows.map((row) => [row.id, viewerRoleOf(row, userId)]));
+    // Unread means "the other side wrote it and I haven't opened it", so the
+    // rows this user is selling on are counted against the opposite sender
+    // to the ones they are buying on — two grouped queries, not one per row.
+    const idsByRole = {
+      [EnquiryViewerRole.BUYER]: rows.filter((row) => roleByEnquiry[row.id] === EnquiryViewerRole.BUYER).map((row) => row.id),
+      [EnquiryViewerRole.SELLER]: rows.filter((row) => roleByEnquiry[row.id] === EnquiryViewerRole.SELLER).map((row) => row.id),
+    };
+    const [unreadAsBuyer, unreadAsSeller] = await Promise.all([
+      enquiryRepository.countUnreadByEnquiryIds(idsByRole[EnquiryViewerRole.BUYER], MessageSenderType.PARTNER),
+      enquiryRepository.countUnreadByEnquiryIds(idsByRole[EnquiryViewerRole.SELLER], MessageSenderType.CUSTOMER),
+    ]);
+
     const items = await Promise.all(
       rows.map(async (row) => {
         const lastMessage = await enquiryRepository.findLatestMessage(row.id);
-        return toCustomerInboxDto(row, { unreadCount: unreadByEnquiry[row.id] ?? 0, lastMessage });
+        const viewerRole = roleByEnquiry[row.id];
+        const unreadCount =
+          viewerRole === EnquiryViewerRole.SELLER ? (unreadAsSeller[row.id] ?? 0) : (unreadAsBuyer[row.id] ?? 0);
+        return toCustomerInboxDto(row, { unreadCount, lastMessage, viewerRole });
       })
     );
 
     return { items, meta: { page, limit, total: count, totalPages: Math.max(Math.ceil(count / limit), 1) } };
   },
 
-  async getThreadForCustomer({ id, customerId }) {
-    const enquiry = await enquiryRepository.findByIdForCustomer({ id, customerId });
+  async getThreadForCustomer({ id, userId }) {
+    const enquiry = await enquiryRepository.findByIdForCustomer({ id, userId });
     if (!enquiry) throw new NotFoundError('Conversation not found');
 
     const { rows: messages } = await enquiryRepository.findMessages({ enquiryId: id, limit: 500, offset: 0 });
-    return toCustomerThreadDto(enquiry, messages);
+    return toCustomerThreadDto(enquiry, messages, viewerRoleOf(enquiry, userId));
   },
 
-  async sendFromCustomer({ enquiryId, customerId, text }) {
+  /**
+   * A reply from either end. `MessageSenderType.PARTNER` means "the selling
+   * side", not "someone using petza-partner" — a private seller's replies
+   * are stored as PARTNER so `lastMessageFromPartner`, the read-receipt
+   * columns and the partner app's own DTOs all keep their single meaning.
+   */
+  async sendFromCustomer({ enquiryId, userId, text }) {
     const trimmed = String(text ?? '').trim();
     if (!trimmed) throw new BadRequestError('Message cannot be empty');
 
-    const enquiry = await enquiryRepository.findByIdForCustomer({ id: enquiryId, customerId });
+    const enquiry = await enquiryRepository.findByIdForCustomer({ id: enquiryId, userId });
     if (!enquiry) throw new NotFoundError('Conversation not found');
     if (enquiry.status === EnquiryStatus.CLOSED) throw new ForbiddenError('This conversation is closed');
 
+    const viewerRole = viewerRoleOf(enquiry, userId);
+    const fromSellerSide = viewerRole === EnquiryViewerRole.SELLER;
+
     const message = await sequelize.transaction(async (transaction) => {
       const created = await enquiryRepository.createMessage(
-        { enquiryId, senderType: MessageSenderType.CUSTOMER, senderId: customerId, text: trimmed },
+        {
+          enquiryId,
+          senderType: fromSellerSide ? MessageSenderType.PARTNER : MessageSenderType.CUSTOMER,
+          senderId: userId,
+          text: trimmed,
+        },
         { transaction }
       );
-      await enquiryRepository.update(enquiry, { lastMessageAt: created.createdAt, lastMessageFromPartner: false }, { transaction });
+      await enquiryRepository.update(
+        enquiry,
+        { lastMessageAt: created.createdAt, lastMessageFromPartner: fromSellerSide },
+        { transaction }
+      );
       return created;
     });
 
     emitEnquiryMessage(
       enquiryId,
-      { storeId: enquiry.storeId, customerId },
+      { storeId: enquiry.storeId, customerId: enquiry.customerId, individualOwnerId: enquiry.individualOwnerId },
       toLiveMessagePayload(enquiryId, message)
     );
     emitEnquiryUpdated(enquiryId, { id: enquiryId, lastMessageAt: message.createdAt });
 
+    // Viewer-less: the recipient's own app decides what `fromMe` means for
+    // it, from `fromPartner`, exactly as the live socket payload does.
     return toMessageDto(message);
   },
 
-  async markReadByCustomer({ enquiryId, customerId }) {
-    const enquiry = await enquiryRepository.findByIdForCustomer({ id: enquiryId, customerId });
+  async markReadByCustomer({ enquiryId, userId }) {
+    const enquiry = await enquiryRepository.findByIdForCustomer({ id: enquiryId, userId });
     if (!enquiry) throw new NotFoundError('Conversation not found');
 
-    await enquiryRepository.markMessagesRead({ enquiryId, readerIsPartner: false });
-    emitEnquiryUpdated(enquiryId, { id: enquiryId, readByCustomer: true });
+    // A private seller opening a thread marks the *buyer's* messages read —
+    // same query, read from the other end.
+    const readerIsPartner = viewerRoleOf(enquiry, userId) === EnquiryViewerRole.SELLER;
+    await enquiryRepository.markMessagesRead({ enquiryId, readerIsPartner });
+    emitEnquiryUpdated(enquiryId, { id: enquiryId, [readerIsPartner ? 'readByPartner' : 'readByCustomer']: true });
   },
 };

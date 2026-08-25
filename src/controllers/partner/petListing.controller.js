@@ -1,3 +1,4 @@
+import { PetListingType } from '../../config/constants.js';
 import { petMediaUrl } from '../../middleware/upload.js';
 import { petListingService } from '../../services/partner/petListing.service.js';
 import { BadRequestError } from '../../shared/errors/AppError.js';
@@ -19,6 +20,12 @@ export const createListing = asyncHandler(async (req, res) => {
   const data = await petListingService.create({
     // Never from the body — `requireCapability` resolved this from the token.
     storeId: req.store.id,
+    // Pinned, not asked. A store publishing a pet is selling it, so the
+    // partner form has no listing-type question to answer — the choice
+    // only exists for a customer listing their own pet (see the customer
+    // listings router). A partner giving one away still uses a ₹0 SALE
+    // listing, which the app already renders as "No adoption fee".
+    listingType: PetListingType.SALE,
     answers: req.body.answers,
     media: req.body.media,
   });
