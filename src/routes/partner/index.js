@@ -1,39 +1,50 @@
 import { Router } from 'express';
 
+import { partnerCommerceRouter } from './commerce.routes.js';
+import { partnerListingsRouter } from './listings.routes.js';
 import { partnerOnboardingRouter } from './onboarding.routes.js';
-import { partnerPetsRouter } from './pets.routes.js';
 import { partnerStoreRouter } from './store.routes.js';
-import { partnerSuppliesRouter } from './supplies.routes.js';
 
 /**
- * Partner dashboard surface, mounted at /partner in routes/index.js —
- * already wrapped there in `authenticate` + `authorize(Context.PARTNER)`,
- * so no domain router below needs to repeat either check. Add a finer
- * `authorize(Role.PARTNER_OWNER)` per-route only where an action must be
- * owner-only (payouts, staff management) — see PLATFORM_CONTEXT.md §7.2/R1.
+ * Partner surface, mounted at /partner in routes/index.js — already
+ * wrapped there in `authenticate` + `authorize(Context.PARTNER)`, so no
+ * router below repeats either check.
  *
- * A partner request never carries its own storeId — every domain
- * controller derives it from `req.user.partnerStoreId`, never from the
- * body or a query param.
+ * There is one partner shell now, not three (PRODUCT_CONTEXT.md §3), so
+ * this file no longer mounts one router per pillar. What varies is
+ * enforced a level down, by `requireCapability` on the individual routes
+ * that need it — a services-only partner and a supplies-only partner hit
+ * the same endpoints and are told apart there.
  *
- * Domain routers land here as each pillar is built, e.g.:
- *   partnerRouter.use('/store', storeRouter);
- *   partnerRouter.use('/pets', petsRouter);
- *   partnerRouter.use('/orders', ordersRouter);
+ * Pets left this surface entirely: partners sell supplies and services,
+ * and `pet_listings` is now the customer app's own "rehome my pet" flow.
+ * The pet services still exist under services/shared for those customer
+ * routes — they are simply no longer reachable from /partner.
+ *
+ * A partner request never carries its own storeId — every controller
+ * derives it from `req.store`, which `requireCapability`/`requireStore`
+ * resolved from the token.
  */
 export const partnerRouter = Router();
 
 /**
- * Signing up: business type, KYC, approval status. Note this is the one
+ * Signing up: what you offer, KYC, approval status. This is the one
  * partner surface a user reaches *before* they have a store — the whole
  * point of it is creating one — so its controllers read `req.user.id`
- * rather than `req.user.partnerStoreId`.
+ * rather than `req.store`.
  */
 partnerRouter.use('/onboarding', partnerOnboardingRouter);
 
-/** The store itself, once it exists — currently just which pillars it runs. */
+/** The store itself, once it exists — profile, and the capabilities the "grow your business" flow turns on. */
 partnerRouter.use('/store', partnerStoreRouter);
 
-/** Pillar surfaces. Each gates itself on the store capability it belongs to, so a partner only reaches the ones their business actually runs. */
-partnerRouter.use('/pets', partnerPetsRouter);
-partnerRouter.use('/supplies', partnerSuppliesRouter);
+/** Products and services, each half gated on the capability it belongs to. */
+partnerRouter.use('/listings', partnerListingsRouter);
+
+/**
+ * The demand side and the money: dashboard, orders, bookings, wallet.
+ * Mounted at the root rather than under a prefix because these are four
+ * peer surfaces of the app, not one domain — `/partner/orders`,
+ * `/partner/wallet`, `/partner/dashboard`.
+ */
+partnerRouter.use('/', partnerCommerceRouter);

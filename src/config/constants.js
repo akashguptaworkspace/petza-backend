@@ -10,53 +10,64 @@ export const Context = Object.freeze({
   ADMIN: 'ADMIN',
 });
 
+/**
+ * Which app an account belongs to, and nothing else. Seat levels
+ * (owner/manager/staff) and admin tiers used to live here too; the first
+ * were never branched on and the second moved to `AdminRole` below — see
+ * migration 20260829000008.
+ */
 export const Role = Object.freeze({
   CUSTOMER: 'CUSTOMER',
-  PARTNER_OWNER: 'PARTNER_OWNER',
-  PARTNER_MANAGER: 'PARTNER_MANAGER',
-  PARTNER_STAFF: 'PARTNER_STAFF',
+  PARTNER: 'PARTNER',
   ADMIN: 'ADMIN',
-  SUPER_ADMIN: 'SUPER_ADMIN',
-});
-
-/** Maps a granular Role to the JWT `context` it belongs to. */
-export const RoleContext = Object.freeze({
-  [Role.CUSTOMER]: Context.CUSTOMER,
-  [Role.PARTNER_OWNER]: Context.PARTNER,
-  [Role.PARTNER_MANAGER]: Context.PARTNER,
-  [Role.PARTNER_STAFF]: Context.PARTNER,
-  [Role.ADMIN]: Context.ADMIN,
-  [Role.SUPER_ADMIN]: Context.ADMIN,
 });
 
 /**
- * What a partner actually does on Petza — chosen on the partner app's
- * role screen (`app/signup/role.tsx`) and the thing that decides which
- * dashboard they land in.
+ * Which slice of the admin console an admin may touch — `users.admin_role`,
+ * null for everyone who isn't an ADMIN. SUPER_ADMIN is the only one that
+ * can grant it to someone else.
+ */
+export const AdminRole = Object.freeze({
+  SUPER_ADMIN: 'SUPER_ADMIN',
+  CATEGORY_MANAGER: 'CATEGORY_MANAGER',
+  SUPPORT_AGENT: 'SUPPORT_AGENT',
+  FINANCE_MANAGER: 'FINANCE_MANAGER',
+});
+
+/** Maps a Role to the JWT `context` it belongs to. One-to-one now, but the indirection is what route guards read. */
+export const RoleContext = Object.freeze({
+  [Role.CUSTOMER]: Context.CUSTOMER,
+  [Role.PARTNER]: Context.PARTNER,
+  [Role.ADMIN]: Context.ADMIN,
+});
+
+/**
+ * The *shape* of a partner's business, for KYC paperwork and admin
+ * filtering. Deliberately not what they sell.
  *
- * There is deliberately no PET_SHOP member: a pet shop and a breeder run
- * the same storefront (list pets, take enquiries, sell), so they share the
- * KENNEL type and one set of screens rather than each getting a near-empty
- * duplicate. Mirrors petza-partner's `BusinessType` union exactly.
+ * This used to be KENNEL/VET/TRAINER/GROOMER/SUPPLIER, and it used to
+ * decide which of three dashboards a partner landed in. That coupling is
+ * gone (PRODUCT_CONTEXT.md §3): there is one partner dashboard, and what
+ * varies inside it is the two capability flags on `stores`, not this.
  *
- * VET, TRAINER and GROOMER are all care providers — they sell slots, so
- * they share the PROVIDE_CARE capability and one set of dashboards, and
- * differ only in wording, KYC proofs and one optional module each. Adding
- * the next one (boarding, day-care, walking) is a member here, a profile
- * table, and a care profile in the app — never a new dashboard.
- *
- * SUPPLIER is a business whose whole trade is supplies — an online pet
- * food and accessories shop that sells no pets and provides no care. A
- * kennel that *also* stocks food is not this: it stays a KENNEL and adds
- * the SELL_SUPPLIES capability. Business type is what you are; capability
- * is what you do.
+ * A vet clinic that also sells food and a supplies shop that also grooms
+ * are both perfectly expressible now — business type says what you *are*,
+ * `offersProducts`/`offersServices` say what you *do*, and the second can
+ * grow without the first changing.
  */
 export const BusinessType = Object.freeze({
-  KENNEL: 'KENNEL',
-  VET: 'VET',
-  TRAINER: 'TRAINER',
+  INDIVIDUAL: 'INDIVIDUAL',
+  STORE: 'STORE',
+  CLINIC: 'CLINIC',
   GROOMER: 'GROOMER',
-  SUPPLIER: 'SUPPLIER',
+});
+
+/** Prose forms, so nothing has to un-shout an enum member into a sentence. */
+export const BusinessTypeLabel = Object.freeze({
+  [BusinessType.INDIVIDUAL]: 'Individual seller',
+  [BusinessType.STORE]: 'Store',
+  [BusinessType.CLINIC]: 'Clinic',
+  [BusinessType.GROOMER]: 'Groomer',
 });
 
 /** Lifecycle of a partner's store, from "just picked a business type" to live. */
@@ -85,33 +96,156 @@ export const StoreStatusApproval = Object.freeze({
 });
 
 /**
- * What each business type is allowed to do — derived server-side from the
- * chosen type, never sent by the client. A store's capabilities can be
- * widened later by an admin (§2 "one partner, many capabilities"); this is
- * only the starting set.
+ * The two things a partner can offer — `stores.offers_products` and
+ * `stores.offers_services` (PRODUCT_CONTEXT.md §3). Chosen at signup, and
+ * widened later through the "grow your business" flow.
+ *
+ * Widening only. Turning a capability *off* would orphan live bookings and
+ * in-flight orders, so the partner pauses their listings instead; nothing
+ * in the API flips either flag back to false.
  */
-export const BusinessTypeCapabilities = Object.freeze({
-  [BusinessType.KENNEL]: ['SELL_PETS'],
-  [BusinessType.VET]: ['PROVIDE_CARE'],
-  [BusinessType.TRAINER]: ['PROVIDE_CARE'],
-  [BusinessType.GROOMER]: ['PROVIDE_CARE'],
-  [BusinessType.SUPPLIER]: ['SELL_SUPPLIES'],
+export const PartnerCapability = Object.freeze({
+  PRODUCTS: 'PRODUCTS',
+  SERVICES: 'SERVICES',
 });
 
-export const StoreCapability = Object.freeze({
-  SELL_PETS: 'SELL_PETS',
-  SELL_SUPPLIES: 'SELL_SUPPLIES',
-  PROVIDE_CARE: 'PROVIDE_CARE',
+/** Which half of the taxonomy a `categories` row belongs to. */
+export const ListingType = Object.freeze({
+  PRODUCT: 'PRODUCT',
+  SERVICE: 'SERVICE',
+});
+
+/** How a `category_attributes` field is answered. The server never sends component names — only the kind of answer it expects. */
+export const CategoryAttributeType = Object.freeze({
+  SELECT: 'SELECT',
+  MULTISELECT: 'MULTISELECT',
+  NUMBER: 'NUMBER',
+  TEXT: 'TEXT',
+  BOOLEAN: 'BOOLEAN',
 });
 
 /**
- * A supplies catalogue entry's lifecycle. Products are never deleted —
- * past orders point at them — so retiring one is ARCHIVED, not a DELETE.
+ * The partner's half of whether a listing is live. The admin's half is
+ * `ModerationStatus` — a listing reaches customers only when this is
+ * ACTIVE *and* that is APPROVED (§8). Neither side can publish alone.
  */
-export const ProductStatus = Object.freeze({
+export const ProductListingStatus = Object.freeze({
   DRAFT: 'DRAFT',
   ACTIVE: 'ACTIVE',
-  ARCHIVED: 'ARCHIVED',
+  PAUSED: 'PAUSED',
+  OUT_OF_STOCK: 'OUT_OF_STOCK',
+});
+
+/** Same as ProductListingStatus minus OUT_OF_STOCK — a service doesn't run out, it gets paused. */
+export const ServiceListingStatus = Object.freeze({
+  DRAFT: 'DRAFT',
+  ACTIVE: 'ACTIVE',
+  PAUSED: 'PAUSED',
+});
+
+/** The admin's half of the publish gate, on listings and on reviews. */
+export const ModerationStatus = Object.freeze({
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+});
+
+/** Where a service happens. Decides whether a booking needs a visit address. */
+export const ServiceLocationType = Object.freeze({
+  AT_STORE: 'AT_STORE',
+  HOME_VISIT: 'HOME_VISIT',
+});
+
+/** Product order lifecycle (§7). DELIVERED is what writes the EARNING row. */
+export const OrderStatus = Object.freeze({
+  NEW: 'NEW',
+  PACKED: 'PACKED',
+  SHIPPED: 'SHIPPED',
+  DELIVERED: 'DELIVERED',
+  RETURNED: 'RETURNED',
+  CANCELLED: 'CANCELLED',
+});
+
+/**
+ * Which status a partner may move an order to from where it is now.
+ * Terminal states map to an empty list, which is also what the detail
+ * screen reads to decide whether to show the status sheet at all.
+ */
+export const OrderStatusTransitions = Object.freeze({
+  [OrderStatus.NEW]: [OrderStatus.PACKED, OrderStatus.CANCELLED],
+  [OrderStatus.PACKED]: [OrderStatus.SHIPPED, OrderStatus.CANCELLED],
+  [OrderStatus.SHIPPED]: [OrderStatus.DELIVERED],
+  [OrderStatus.DELIVERED]: [OrderStatus.RETURNED],
+  [OrderStatus.RETURNED]: [],
+  [OrderStatus.CANCELLED]: [],
+});
+
+/** Service booking lifecycle (§7). COMPLETED is what writes the EARNING row. */
+export const BookingStatus = Object.freeze({
+  UPCOMING: 'UPCOMING',
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED',
+  CANCELLED: 'CANCELLED',
+});
+
+export const BookingStatusTransitions = Object.freeze({
+  [BookingStatus.UPCOMING]: [BookingStatus.IN_PROGRESS, BookingStatus.CANCELLED],
+  [BookingStatus.IN_PROGRESS]: [BookingStatus.COMPLETED, BookingStatus.CANCELLED],
+  [BookingStatus.COMPLETED]: [],
+  [BookingStatus.CANCELLED]: [],
+});
+
+/** Ledger row kind. `amount_in_inr` is always positive; this is what says which way it moves the balance. */
+export const WalletTransactionType = Object.freeze({
+  EARNING: 'EARNING',
+  PAYOUT: 'PAYOUT',
+  REFUND: 'REFUND',
+});
+
+export const WalletTransactionStatus = Object.freeze({
+  PENDING: 'PENDING',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+});
+
+/** What a ledger row came from. Not a foreign key — it points at three different tables. */
+export const WalletReferenceType = Object.freeze({
+  ORDER: 'ORDER',
+  BOOKING: 'BOOKING',
+  PAYOUT_REQUEST: 'PAYOUT_REQUEST',
+});
+
+export const PayoutMethod = Object.freeze({
+  BANK: 'BANK',
+  UPI: 'UPI',
+});
+
+/** A review always hangs off a transaction that actually happened. */
+export const ReviewReferenceType = Object.freeze({
+  ORDER: 'ORDER',
+  BOOKING: 'BOOKING',
+});
+
+/** What a KYC upload is meant to prove. */
+export const KycDocType = Object.freeze({
+  IDENTITY: 'IDENTITY',
+  BUSINESS_LICENSE: 'BUSINESS_LICENSE',
+  GST: 'GST',
+  CLINIC_REGISTRATION: 'CLINIC_REGISTRATION',
+  CERTIFICATION: 'CERTIFICATION',
+  OTHER: 'OTHER',
+});
+
+export const KycDocStatus = Object.freeze({
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+});
+
+export const BroadcastAudience = Object.freeze({
+  ALL: 'ALL',
+  PARTNERS: 'PARTNERS',
+  CONSUMERS: 'CONSUMERS',
 });
 
 /**
@@ -156,8 +290,21 @@ export const PetListingStatus = Object.freeze({
   ARCHIVED: 'ARCHIVED',
 });
 
-/** What customers can still buy. Anything else is hidden from the public catalogue but stays visible to its owner. */
+/**
+ * Everything discoverable in the customer catalogue. A sold or paused pet
+ * stays visible with its real status so discovery is based on location, not
+ * availability. ARCHIVED remains private because it is the explicit
+ * "remove listing" state.
+ */
 export const PubliclyVisiblePetStatuses = Object.freeze([
+  PetListingStatus.AVAILABLE,
+  PetListingStatus.RESERVED,
+  PetListingStatus.SOLD,
+  PetListingStatus.UNAVAILABLE,
+]);
+
+/** Statuses counted by UI that specifically says "Pets Available". */
+export const AvailablePetStatuses = Object.freeze([
   PetListingStatus.AVAILABLE,
   PetListingStatus.RESERVED,
 ]);

@@ -1,12 +1,16 @@
 import { z } from 'zod';
 
-import { StoreCapability } from '../../config/constants.js';
+import { PartnerCapability } from '../../config/constants.js';
 
 /**
- * The full capability set the store should end up with. The server pins
- * the business type's own capability on regardless, so leaving it out of
- * the list can't strand a vet without care.
+ * Which capabilities to turn **on**. Additive only — there is no "off"
+ * to express, because turning one off would orphan live bookings and
+ * in-flight orders (PRODUCT_CONTEXT.md §3), so the service has no path
+ * that does it and this schema has no shape for it.
+ *
+ * Sending one already on is a no-op rather than an error: the "grow your
+ * business" flow submits what the partner ticked, not a diff.
  */
-export const updateCapabilitiesSchema = z.object({
-  capabilities: z.array(z.enum(Object.values(StoreCapability))).min(1).max(3),
+export const enableCapabilitiesSchema = z.object({
+  capabilities: z.array(z.enum(Object.values(PartnerCapability))).min(1).max(2),
 });

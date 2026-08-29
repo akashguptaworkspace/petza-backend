@@ -1,31 +1,32 @@
-import {
-  ApprovalStatus,
-  BusinessType,
-  BusinessTypeCapabilities,
-  StoreStatus,
-  StoreStatusApproval,
-} from '../../config/constants.js';
+import { ApprovalStatus, PartnerCapability, StoreStatus, StoreStatusApproval } from '../../config/constants.js';
 import { sequelize } from '../../models/index.js';
 import { storeRepository } from '../../repositories/shared/store.repository.js';
 import { userRepository } from '../../repositories/shared/user.repository.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { canonicalStateName, stateOfCity } from '../../utils/indiaLocations.js';
 
 /**
- * Statuses whose business type is still the partner's to change. Once KYC
- * is in the review queue (or approved), the type is what Petza staff
- * verified the documents against, so it stops being self-serve — a
- * REJECTED partner is fixing their submission, so they get it back.
+ * Partner onboarding — PRODUCT_CONTEXT.md §3.
+ *
+ * Signup used to ask "what kind of business are you?" and hand back one of
+ * five business types, each of which unlocked a different dashboard. It
+ * now asks the only question that changes anything: **what do you want to
+ * offer?** — supplies, services, or both. That answer sets two booleans,
+ * and the single partner dashboard adapts around them.
+ *
+ * Business type survives on the KYC form, where it belongs: it tells staff
+ * what paperwork to expect from a clinic versus an individual. It no
+ * longer decides navigation, so it is no longer asked before the partner
+ * has even named their business.
  */
-const TYPE_CHANGEABLE_STATUSES = [StoreStatus.PENDING_KYC, StoreStatus.REJECTED];
 
-/** Business name lives on a different field per business type — the app's KYC forms speak the partner's language, the store row does not. */
-const NAME_FIELD = {
-  KENNEL: 'kennelName',
-  VET: 'clinicName',
-  TRAINER: 'businessName',
-  GROOMER: 'salonName',
-  SUPPLIER: 'storeName',
-};
+/** Statuses whose KYC is still the partner's to (re)submit. Once it is in the queue, it stops being self-serve; a REJECTED partner is fixing their submission, so they get it back. */
+const KYC_EDITABLE_STATUSES = [StoreStatus.PENDING_KYC, StoreStatus.REJECTED];
+
+const CAPABILITY_COLUMN = Object.freeze({
+  [PartnerCapability.PRODUCTS]: 'offersProducts',
+  [PartnerCapability.SERVICES]: 'offersServices',
+});
 
 function slugify(value) {
   return value
@@ -47,77 +48,22 @@ async function uniqueSlug(name, storeId, transaction) {
   return `${base}-${Date.now()}`;
 }
 
-/** Maps a store's KYC answers into its profile table's columns. `undefined` stays out so a partial resubmit never blanks a field. */
-function profileValuesFor(payload) {
-  const toInt = (value) => {
-    if (value === undefined || value === null || value === '') return null;
-    const parsed = Number.parseInt(value, 10);
-    return Number.isNaN(parsed) ? null : parsed;
-  };
-
-  switch (payload.role) {
-    case BusinessType.KENNEL:
-      return {
-        yearsActive: toInt(payload.yearsActive),
-        registrationNumber: payload.registrationNumber ?? null,
-        pincode: payload.pincode ?? null,
-        breeds: payload.breeds ?? [],
-      };
-    case BusinessType.VET:
-      return {
-        councilRegistrationNumber: payload.councilRegistrationNumber ?? null,
-        services: payload.services ?? [],
-      };
-    case BusinessType.SUPPLIER:
-      return {
-        gstNumber: payload.gstNumber ?? null,
-        warehouseCity: payload.warehouseCity ?? null,
-        brandsStocked: payload.brandsStocked ?? [],
-        categories: payload.categories ?? [],
-        shipsNationwide: payload.shipsNationwide ?? false,
-      };
-    case BusinessType.GROOMER:
-      return {
-        experienceYears: toInt(payload.experienceYears),
-        isMobile: payload.isMobile ?? false,
-        services: payload.services ?? [],
-        petTypes: payload.petTypes ?? [],
-      };
-    case BusinessType.TRAINER:
-      return {
-        experienceYears: toInt(payload.experienceYears),
-        certificationBody: payload.certificationBody ?? null,
-        certificationNumber: payload.certificationNumber ?? null,
-        baseArea: payload.baseArea ?? null,
-        travelRadiusKm: toInt(payload.travelRadiusKm),
-        trainingOffered: payload.trainingOffered ?? [],
-      };
-    default:
-      throw new BadRequestError('Unknown business type');
-  }
-}
-
 /**
  * Never return the model — this is the shape petza-partner's onboarding
- * screens read.
- *
- * It doubles as the partner's "my store" read: GET /partner/onboarding is
- * the only endpoint that returns the store row today, so the dashboards
- * header (name, city, verified tick) is built from this too. That's why
- * `city`/`ownerName`/`isVerified` are here — they are nothing to do with
- * onboarding itself. When a real GET /partner/store lands, that becomes
- * the dashboard's source and these three can go back out.
+ * screens and its dashboard header both read.
  */
 function toOnboardingDto(store) {
   if (!store) {
     return {
       storeId: null,
       businessType: null,
-      capabilities: [],
+      offersProducts: false,
+      offersServices: false,
       approvalStatus: ApprovalStatus.PENDING,
       status: null,
       name: null,
       ownerName: null,
+      address: null,
       city: null,
       isVerified: false,
       kycSubmittedAt: null,
@@ -127,11 +73,13 @@ function toOnboardingDto(store) {
   return {
     storeId: store.id,
     businessType: store.businessType,
-    capabilities: store.capabilities ?? [],
+    offersProducts: store.offersProducts,
+    offersServices: store.offersServices,
     approvalStatus: StoreStatusApproval[store.status],
     status: store.status,
     name: store.name,
     ownerName: store.ownerName,
+    address: store.address,
     city: store.city,
     isVerified: store.isVerified ?? false,
     kycSubmittedAt: store.kycSubmittedAt,
@@ -140,62 +88,51 @@ function toOnboardingDto(store) {
 }
 
 export const partnerOnboardingService = {
-  /** Where the partner is in onboarding — lets the app resume mid-flow after a reinstall instead of restarting at the role screen. */
+  /** Where the partner is in onboarding — lets the app resume mid-flow after a reinstall instead of restarting at the first screen. */
   async getOnboarding(userId) {
     const store = await storeRepository.findByOwnerUserId(userId);
     return toOnboardingDto(store);
   },
 
   /**
-   * The role screen's submit. Creates the partner's one store row (§2:
-   * one partner resolves to exactly one `partnerStoreId`) or retypes the
-   * existing one, and links it back onto the user so every later partner
-   * request can read `req.user.partnerStoreId` from the token.
+   * The signup capability screen's submit — "What do you want to offer on
+   * Petza?" — and the thing that creates the partner's one store row.
    *
-   * Idempotent: picking the same type twice is a no-op, so a retry after a
-   * dropped response never creates a second store.
+   * Idempotent: submitting the same set twice is a no-op, so a retry after
+   * a dropped response never creates a second store.
+   *
+   * Additive, exactly like the later "grow your business" flow: a partner
+   * who comes back through here can only turn capabilities on. Nothing
+   * takes one away, because doing so would orphan live bookings and
+   * in-flight orders (§3).
    */
-  async selectBusinessType({ userId, businessType }) {
+  async selectCapabilities({ userId, capabilities }) {
     const user = await userRepository.findById(userId);
     if (!user) throw new NotFoundError('Account no longer exists');
 
+    const changes = {};
+    for (const capability of capabilities) changes[CAPABILITY_COLUMN[capability]] = true;
+
     const existing = await storeRepository.findByOwnerUserId(userId);
-
     if (existing) {
-      if (existing.businessType === businessType) return toOnboardingDto(existing);
-
-      if (!TYPE_CHANGEABLE_STATUSES.includes(existing.status)) {
-        throw new ConflictError(
-          'Your business type is locked while your details are being reviewed. Contact support to change it.'
-        );
-      }
-
-      const updated = await sequelize.transaction(async (transaction) => {
-        // The old type's KYC answers describe a business this partner no
-        // longer says they run — they cannot carry over to the new one.
-        await storeRepository.deleteProfilesExcept({ businessType, storeId: existing.id, transaction });
-        return storeRepository.update(
-          existing,
-          { businessType, capabilities: BusinessTypeCapabilities[businessType] },
-          { transaction }
-        );
-      });
-
-      return toOnboardingDto(updated);
+      const alreadySet = Object.entries(changes).every(([column]) => existing[column]);
+      if (alreadySet) return toOnboardingDto(existing);
+      return toOnboardingDto(await storeRepository.update(existing, changes));
     }
 
     const store = await sequelize.transaction(async (transaction) => {
       const created = await storeRepository.create(
         {
           ownerUserId: userId,
-          businessType,
-          capabilities: BusinessTypeCapabilities[businessType],
+          ...changes,
           status: StoreStatus.PENDING_KYC,
           email: user.email,
           phone: user.phone,
         },
         { transaction }
       );
+      // Linked back onto the user so every later partner request can read
+      // `req.user.partnerStoreId` straight off the token.
       await userRepository.update(user, { partnerStoreId: created.id }, { transaction });
       return created;
     });
@@ -204,42 +141,54 @@ export const partnerOnboardingService = {
   },
 
   /**
-   * The KYC form's submit — names the business, fills the business type's
-   * own profile table, replaces the uploaded documents, and puts the store
-   * into the admin review queue.
+   * The KYC form's submit — names the business, records what shape it is,
+   * stores the uploaded documents, and opens the dashboard.
    *
-   * KENNEL is the one exception: a breeder/kennel carries no professional
-   * licence to verify (unlike VET's council registration or TRAINER's
-   * certification), so its documents are stored but never gated on — the
-   * store goes ACTIVE immediately instead of UNDER_REVIEW, and the partner
-   * app never shows it the pending-review screen.
+   * One form for every partner now. There used to be five, one per
+   * business type, each writing to its own profile table; the fields that
+   * genuinely differ between a clinic and a groomer turned out to be
+   * per-*listing* facts, and those live in a listing's dynamic
+   * `attributes` (§4), where admin can add to them without a migration.
+   *
+   * Submitting takes the store straight to ACTIVE rather than into a
+   * review queue. Petza gates the risky thing — listing under a
+   * `requires_verification` category like Medicines or Veterinary needs an
+   * approved document (§4) — rather than holding every partner's whole
+   * account behind a manual review before they can so much as see their
+   * dashboard. Admin can still suspend, and `isVerified` (the public tick)
+   * stays a separate, staff-set flag.
    */
   async submitKyc(userId, payload) {
     const store = await storeRepository.findByOwnerUserId(userId);
-    if (!store) throw new BadRequestError('Pick what you do on Petza before submitting your details');
+    if (!store) throw new BadRequestError('Choose what you want to offer on Petza before submitting your details');
 
-    if (store.businessType !== payload.role) {
-      throw new BadRequestError(`These details are for a ${payload.role} — your account is registered as a ${store.businessType}`);
+    if (store.status === StoreStatus.SUSPENDED) throw new ConflictError('This account is suspended. Contact support.');
+    if (!KYC_EDITABLE_STATUSES.includes(store.status)) {
+      throw new ConflictError('Your details have already been submitted');
     }
 
-    if (store.status === StoreStatus.ACTIVE) throw new ConflictError('Your account is already approved');
-    if (store.status === StoreStatus.SUSPENDED) throw new ConflictError('This account is suspended. Contact support.');
-    if (store.status === StoreStatus.UNDER_REVIEW) throw new ConflictError('Your details are already under review');
-
-    const name = payload[NAME_FIELD[payload.role]];
     const submittedAt = new Date();
 
     const updated = await sequelize.transaction(async (transaction) => {
-      const slug = await uniqueSlug(name, store.id, transaction);
+      const slug = await uniqueSlug(payload.businessName, store.id, transaction);
 
       const next = await storeRepository.update(
         store,
         {
-          name,
+          name: payload.businessName,
           slug,
+          businessType: payload.businessType,
           ownerName: payload.ownerName,
+          address: payload.address ?? null,
           city: payload.city,
-          status: payload.role === BusinessType.KENNEL ? StoreStatus.ACTIVE : StoreStatus.UNDER_REVIEW,
+          // Derived from the city when the KYC form didn't carry one: every
+          // listing this store owns is labelled and filtered from these
+          // columns (see `locationOf` and the catalogue's `state=` filter),
+          // so a blank state here used to hide the whole shop from anyone
+          // browsing the state it is plainly in.
+          state: canonicalStateName(payload.state ?? stateOfCity(payload.city)),
+          pincode: payload.pincode ?? null,
+          status: StoreStatus.ACTIVE,
           kycSubmittedAt: submittedAt,
           // A resubmission after rejection starts clean — leaving the old
           // reason behind would keep the app rendering the rejected copy.
@@ -249,14 +198,11 @@ export const partnerOnboardingService = {
         { transaction }
       );
 
-      await storeRepository.upsertProfile({
-        businessType: payload.role,
+      await storeRepository.replaceKycDocuments({
         storeId: store.id,
-        values: profileValuesFor(payload),
+        documents: payload.documents ?? [],
         transaction,
       });
-
-      await storeRepository.replaceKycDocuments({ storeId: store.id, documents: payload.documents, transaction });
 
       return next;
     });

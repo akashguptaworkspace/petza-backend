@@ -1,45 +1,56 @@
-import { BusinessTypeCapabilities, StoreCapability, StoreStatus } from '../../config/constants.js';
+import { PartnerCapability, StoreStatus } from '../../config/constants.js';
 import { storeRepository } from '../../repositories/shared/store.repository.js';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../shared/errors/AppError.js';
 
 /**
- * The capability a business type is defined by. It can never be switched
- * off: a vet who stops providing care is not a vet, and dropping it would
- * strand every booking their store already has.
+ * Maps the capability the client names onto the column it sets. The two
+ * are kept separate so the wire format stays PRODUCTS/SERVICES — what the
+ * partner picked — rather than leaking column names into the API.
  */
-function baseCapabilityOf(businessType) {
-  return BusinessTypeCapabilities[businessType][0];
-}
+const CAPABILITY_COLUMN = Object.freeze({
+  [PartnerCapability.PRODUCTS]: 'offersProducts',
+  [PartnerCapability.SERVICES]: 'offersServices',
+});
 
 export const partnerStoreService = {
   /**
-   * Turns a pillar on or off for this store — the "my kennel also boards
-   * pets and sells food" case.
+   * The "grow your business" flow's last step — PRODUCT_CONTEXT.md §7.
    *
-   * Capabilities are what the partner app's route groups key off, so this
-   * is the endpoint that gives a kennel its (care) and (supplies)
-   * dashboards. It is deliberately additive-by-listing: the client sends
-   * the full set it wants, the server keeps the base capability pinned.
+   * **Additive only.** The client names the capabilities it wants turned
+   * *on*; anything already on stays on. There is no path here that sets a
+   * flag back to false, and that is deliberate (§3): switching services
+   * off would orphan every booking already in a customer's calendar, and
+   * switching products off would strand in-flight orders. A partner
+   * winding down pauses their listings instead, which leaves the
+   * transactions that are already running intact.
+   *
+   * Once a flag flips, the app's `Products | Services` and
+   * `Orders | Bookings` segmented controls appear on their own — every
+   * screen already reads the flags, so nothing else has to change.
    */
-  async updateCapabilities({ userId, capabilities }) {
+  async enableCapabilities({ userId, capabilities }) {
     const store = await storeRepository.findByOwnerUserId(userId);
     if (!store) throw new NotFoundError('You do not have a store yet');
 
     // Nothing to widen before Petza staff have verified the business at
-    // all — the extra pillars are for a running store, not a shortcut past
-    // review.
+    // all — growing is for a running store, not a shortcut past review.
     if (store.status !== StoreStatus.ACTIVE) {
       throw new ForbiddenError('You can add more to your business once your account is approved');
     }
 
-    const unknown = capabilities.filter((capability) => !StoreCapability[capability]);
+    const unknown = capabilities.filter((capability) => !CAPABILITY_COLUMN[capability]);
     if (unknown.length) throw new BadRequestError(`Unknown capability: ${unknown.join(', ')}`);
 
-    const base = baseCapabilityOf(store.businessType);
-    const next = [...new Set([base, ...capabilities])];
+    const changes = {};
+    for (const capability of capabilities) changes[CAPABILITY_COLUMN[capability]] = true;
 
-    const updated = await storeRepository.update(store, { capabilities: next });
+    const updated = await storeRepository.update(store, changes);
 
-    return { storeId: updated.id, businessType: updated.businessType, capabilities: updated.capabilities ?? [] };
+    return {
+      storeId: updated.id,
+      businessType: updated.businessType,
+      offersProducts: updated.offersProducts,
+      offersServices: updated.offersServices,
+    };
   },
 };

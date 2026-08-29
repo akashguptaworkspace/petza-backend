@@ -1,14 +1,18 @@
 import { Router } from 'express';
 
-import { updateCapabilities } from '../../controllers/partner/store.controller.js';
+import { enableCapabilities } from '../../controllers/partner/store.controller.js';
 import { validate } from '../../middleware/validate.js';
-import { updateCapabilitiesSchema } from '../../validators/partner/store.validator.js';
+import { enableCapabilitiesSchema } from '../../validators/partner/store.validator.js';
 
 /**
- * The partner's own store. Only the capability set lives here so far —
- * the pillars this business runs, which is what decides the dashboards
- * the app opens for them. Profile, hours and staff land here next.
+ * The partner's own store. Only capabilities live here so far — what
+ * this business offers, which is what the single partner dashboard
+ * adapts around. Profile, hours and staff land here next.
+ *
+ * POST rather than PATCH because the operation is additive-only: it turns
+ * capabilities on and has no way to express turning one off (§3), so it
+ * is not a partial replacement of the resource.
  */
 export const partnerStoreRouter = Router();
 
-partnerStoreRouter.patch('/capabilities', validate(updateCapabilitiesSchema), updateCapabilities);
+partnerStoreRouter.post('/capabilities', validate(enableCapabilitiesSchema), enableCapabilities);

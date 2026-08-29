@@ -1,4 +1,4 @@
-import { PubliclyVisiblePetStatuses, PubliclyVisibleStoreStatuses } from '../../config/constants.js';
+import { AvailablePetStatuses, PubliclyVisibleStoreStatuses } from '../../config/constants.js';
 import { petListingRepository } from '../../repositories/shared/petListing.repository.js';
 import { storeRepository } from '../../repositories/shared/store.repository.js';
 import { NotFoundError } from '../../shared/errors/AppError.js';
@@ -15,64 +15,31 @@ import { NotFoundError } from '../../shared/errors/AppError.js';
  */
 
 /**
- * The one profile row a store actually has, whichever type it is.
- * `businessType` decides which association is populated; the other four
- * are always null (see store.repository's PROFILE_INCLUDE).
- */
-function profileOf(store) {
-  return (
-    store.kennelProfile ??
-    store.vetProfile ??
-    store.trainerProfile ??
-    store.groomerProfile ??
-    store.supplierProfile ??
-    null
-  );
-}
-
-/**
  * Short service labels for a store card, derived from what the store
- * genuinely is and does — its business type and the capabilities an admin
- * actually granted it. Not free-text marketing tags: there is no such
+ * genuinely is and does. Not free-text marketing tags: there is no such
  * column, and inventing one per store would be fabricated data.
+ *
+ * These used to lead with the business type ("Pets & Breeding",
+ * "Veterinary") because the type *was* what a partner did. It no longer is
+ * — a clinic that also sells food and a store that also grooms are both
+ * ordinary now — so the tags describe the capabilities instead, which is
+ * the thing that actually differs between two stores of the same type.
  */
 const BUSINESS_TYPE_TAG = {
-  KENNEL: 'Pets & Breeding',
-  VET: 'Veterinary',
-  TRAINER: 'Training',
-  GROOMER: 'Grooming',
-  SUPPLIER: 'Supplies',
-};
-
-const CAPABILITY_TAG = {
-  SELL_PETS: 'Pets',
-  SELL_SUPPLIES: 'Supplies',
-  PROVIDE_CARE: 'Care',
-};
-
-/**
- * The capability every business type already implies, so its tag isn't
- * repeated: a KENNEL tagged "Pets & Breeding" does not also need "Pets",
- * and a VET tagged "Veterinary" does not also need "Care". Only the
- * capabilities a store has *beyond* its type say something new about it.
- */
-const IMPLIED_CAPABILITY = {
-  KENNEL: 'SELL_PETS',
-  VET: 'PROVIDE_CARE',
-  TRAINER: 'PROVIDE_CARE',
-  GROOMER: 'PROVIDE_CARE',
-  SUPPLIER: 'SELL_SUPPLIES',
+  INDIVIDUAL: 'Individual seller',
+  STORE: 'Store',
+  CLINIC: 'Clinic',
+  GROOMER: 'Groomer',
 };
 
 function tagsFor(store) {
-  const tags = [BUSINESS_TYPE_TAG[store.businessType]].filter(Boolean);
-  const implied = IMPLIED_CAPABILITY[store.businessType];
+  const tags = [];
+  if (store.offersProducts) tags.push('Supplies');
+  if (store.offersServices) tags.push('Services');
 
-  for (const capability of store.capabilities ?? []) {
-    if (capability === implied) continue;
-    const label = CAPABILITY_TAG[capability];
-    if (label && !tags.includes(label)) tags.push(label);
-  }
+  const typeTag = BUSINESS_TYPE_TAG[store.businessType];
+  if (typeTag) tags.push(typeTag);
+
   return tags;
 }
 
@@ -93,14 +60,13 @@ function tagsFor(store) {
  * the human on the KYC documents, not a public-facing identity.
  */
 function toPublicDto(store, availablePetCount) {
-  const profile = profileOf(store);
-
   return {
     id: store.id,
     name: store.name,
     slug: store.slug,
     businessType: store.businessType,
-    capabilities: store.capabilities ?? [],
+    offersProducts: store.offersProducts,
+    offersServices: store.offersServices,
     tags: tagsFor(store),
     city: store.city,
     // Nullable in the schema (KYC does not require it) — the app only
@@ -108,11 +74,6 @@ function toPublicDto(store, availablePetCount) {
     phone: store.phone,
     isVerified: store.isVerified,
     availablePetCount,
-    // Kennel-only in practice; the other profile tables have their own
-    // shapes and simply do not carry these, so they come back undefined.
-    experienceYears: profile?.yearsActive ?? null,
-    pincode: profile?.pincode ?? null,
-    breeds: profile?.breeds ?? [],
     createdAt: store.createdAt,
   };
 }
@@ -133,7 +94,7 @@ export const storeCatalogService = {
     // One grouped query for the whole page rather than a COUNT per card.
     const petCounts = await petListingRepository.countPublicByStoreIds({
       storeIds: rows.map((store) => store.id),
-      statuses: PubliclyVisiblePetStatuses,
+      statuses: AvailablePetStatuses,
     });
 
     return {
@@ -151,7 +112,7 @@ export const storeCatalogService = {
 
     const petCounts = await petListingRepository.countPublicByStoreIds({
       storeIds: [store.id],
-      statuses: PubliclyVisiblePetStatuses,
+      statuses: AvailablePetStatuses,
     });
 
     return toPublicDto(store, petCounts[store.id] ?? 0);
@@ -175,7 +136,7 @@ export const storeCatalogService = {
     // One grouped query for the whole set, same as listPublic.
     const petCounts = await petListingRepository.countPublicByStoreIds({
       storeIds: stores.map((store) => store.id),
-      statuses: PubliclyVisiblePetStatuses,
+      statuses: AvailablePetStatuses,
     });
 
     const byId = new Map(stores.map((store) => [store.id, store]));

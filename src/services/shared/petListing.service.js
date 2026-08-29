@@ -5,6 +5,7 @@ import { resolveAnswers } from '../shared/petAnswerValidation.service.js';
 import { petTypeRepository } from '../../repositories/shared/petType.repository.js';
 import { petListingRepository } from '../../repositories/shared/petListing.repository.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { canonicalStateName, stateOfCity } from '../../utils/indiaLocations.js';
 
 /**
  * Answer keys that get their own column, because something filters or
@@ -178,9 +179,16 @@ function cleanCoord(value) {
  */
 function locationColumnsFrom(location) {
   if (!location) return {};
+  const city = cleanPart(location.city) ?? null;
+  // A client that sends a city without its state is not left invisible to
+  // the state-scoped feed: the state is looked up from the bundled dataset
+  // instead. `canonicalStateName` then settles the spelling, so "bihar" and
+  // "Bihar" are one value in the column rather than two.
+  const state = canonicalStateName(cleanPart(location.state) ?? stateOfCity(city));
+
   return {
-    city: cleanPart(location.city) ?? null,
-    state: cleanPart(location.state) ?? null,
+    city,
+    state,
     pincode: cleanPart(location.pincode, 12) ?? null,
     latitude: cleanCoord(location.latitude) ?? null,
     longitude: cleanCoord(location.longitude) ?? null,
@@ -196,9 +204,15 @@ function locationColumnsFrom(location) {
 function locationOf(listing) {
   const own = listing.city || listing.state;
   const source = own ? listing : (listing.store ?? {});
+  const city = source.city ?? null;
+
   return {
-    city: source.city ?? null,
-    state: source.state ?? null,
+    city,
+    // Derived from the city when the column is blank, for the same reason
+    // the `state=` filter matches on city: a row saved before the state was
+    // captured (or a store onboarded with a city alone) is still *in* a
+    // state, and the label has to agree with the filter that just matched it.
+    state: source.state ?? stateOfCity(city),
     pincode: source.pincode ?? null,
     latitude: source.latitude === undefined || source.latitude === null ? null : Number(source.latitude),
     longitude: source.longitude === undefined || source.longitude === null ? null : Number(source.longitude),
@@ -642,7 +656,7 @@ export const petListingService = {
     return toListingDto(await petListingRepository.findByIdForOwner({ id, individualOwnerId }));
   },
 
-  /** The public catalogue — what petza-app browses. */
+  /** The public catalogue — every non-archived listing, with status intact. */
   async listPublic({
     listingType,
     excludeOwnerId,
@@ -712,7 +726,7 @@ export const petListingService = {
   },
 
   /**
-   * Every publicly-buyable pet for one store — backs the store-details
+   * Every publicly discoverable pet for one store — backs the store-details
    * page's own list. Lives here rather than in the store catalogue service
    * so a pet is still shaped by the one function that decides what a
    * public listing looks like (`toPublicDto`), whichever screen asked.
@@ -730,10 +744,9 @@ export const petListingService = {
    * backs the wishlist, which owns the ordering (most recently saved
    * first) and only knows ids.
    *
-   * Ids whose listing is no longer public are simply absent from the
-   * result. That is the intended behaviour, not a gap to fill with a
-   * placeholder: a sold or archived pet leaves the wishlist rather than
-   * sitting there as a card nobody can act on.
+   * Ids whose listing was explicitly archived are absent from the result.
+   * Sold and paused listings remain visible with their status, matching the
+   * catalogue instead of silently disappearing from a customer's wishlist.
    */
   async listPublicByIds(ids) {
     const listings = await petListingRepository.findPublicByIds({

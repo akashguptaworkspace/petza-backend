@@ -1,4 +1,9 @@
-import { EnquiryStatus, EnquiryViewerRole, MessageSenderType } from '../../config/constants.js';
+import {
+  EnquiryStatus,
+  EnquiryViewerRole,
+  MessageSenderType,
+  PubliclyVisiblePetStatuses,
+} from '../../config/constants.js';
 import { enquiryRepository } from '../../repositories/shared/enquiry.repository.js';
 import { petListingRepository } from '../../repositories/shared/petListing.repository.js';
 import { emitEnquiryCreated, emitEnquiryMessage, emitEnquiryUpdated, isCustomerOnline } from '../../realtime/socketServer.js';
@@ -35,6 +40,7 @@ function toPartnerInboxDto(enquiry, { unreadCount, lastMessage }) {
     petId: enquiry.petListingId,
     petName: enquiry.petListing?.name ?? 'Listing removed',
     petImageUrl: mainPhotoUrl(enquiry.petListing),
+    lastMessageId: lastMessage?.id ?? null,
     lastMessage: lastMessage?.text ?? '',
     lastMessageFromPartner: enquiry.lastMessageFromPartner ?? false,
     lastMessageAt: enquiry.lastMessageAt,
@@ -145,6 +151,7 @@ function toCustomerInboxDto(enquiry, { unreadCount, lastMessage, viewerRole }) {
     petId: enquiry.petListingId,
     petName: enquiry.petListing?.name ?? 'Listing removed',
     petImageUrl: mainPhotoUrl(enquiry.petListing),
+    lastMessageId: lastMessage?.id ?? null,
     lastMessage: lastMessage?.text ?? '',
     lastMessageFromMe: lastMessageIsMine(enquiry, viewerRole),
     lastMessageAt: enquiry.lastMessageAt,
@@ -229,12 +236,12 @@ export const enquiryService = {
     const trimmed = String(text ?? '').trim();
     if (!trimmed) throw new BadRequestError('Message cannot be empty');
 
-    // Any listing the customer could plausibly be looking at right now —
-    // wider than the public catalogue's own AVAILABLE/RESERVED filter, so a
-    // conversation already underway doesn't break the moment a pet sells.
+    // Any listing the customer could plausibly be looking at right now.
+    // ARCHIVED is excluded because it is the owner's explicit remove action;
+    // every other status remains discoverable and can keep its conversation.
     const listing = await petListingRepository.findOnePublic({
       idOrSlug: petListingId,
-      statuses: ['AVAILABLE', 'RESERVED', 'SOLD', 'UNAVAILABLE'],
+      statuses: PubliclyVisiblePetStatuses,
     });
     if (!listing) throw new NotFoundError('Listing not found');
 

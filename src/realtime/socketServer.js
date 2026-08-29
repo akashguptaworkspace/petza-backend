@@ -72,6 +72,13 @@ export function initSocketServer(httpServer) {
   io = new Server(httpServer, {
     path: '/socket.io',
     cors: { origin: true, credentials: true },
+    // Keep room membership and packets briefly across an unexpected mobile
+    // network drop. Clients still reconcile from REST when recovery is not
+    // possible (for example after a server restart).
+    connectionStateRecovery: {
+      maxDisconnectionDuration: 2 * 60 * 1000,
+      skipMiddlewares: false,
+    },
   });
 
   io.use(async (socket, next) => {
@@ -150,18 +157,22 @@ export function initSocketServer(httpServer) {
      * its own id and then receive that conversation's messages live. The
      * membership question is about the row, so it is answered from the row.
      */
-    socket.on('enquiry:join', async ({ enquiryId }) => {
+    socket.on('enquiry:join', async ({ enquiryId } = {}) => {
       if (!enquiryId) return;
 
-      const isParty =
-        identity.context === Context.PARTNER
-          ? await enquiryRepository.isThreadOfStore({ enquiryId, storeId: identity.storeId })
-          : await enquiryRepository.isPartyToThread({ enquiryId, userId: identity.customerId });
+      try {
+        const isParty =
+          identity.context === Context.PARTNER
+            ? await enquiryRepository.isThreadOfStore({ enquiryId, storeId: identity.storeId })
+            : await enquiryRepository.isPartyToThread({ enquiryId, userId: identity.customerId });
 
-      if (isParty) socket.join(`enquiry:${enquiryId}`);
+        if (isParty) socket.join(`enquiry:${enquiryId}`);
+      } catch (error) {
+        logger.warn(`Could not join enquiry room ${enquiryId}: ${error.message}`);
+      }
     });
 
-    socket.on('enquiry:leave', ({ enquiryId }) => {
+    socket.on('enquiry:leave', ({ enquiryId } = {}) => {
       if (enquiryId) socket.leave(`enquiry:${enquiryId}`);
     });
 
@@ -170,8 +181,11 @@ export function initSocketServer(httpServer) {
      * to the room minus the sender; the room membership check above is what
      * keeps this from leaking into a thread the socket never joined.
      */
-    socket.on('enquiry:typing', ({ enquiryId }) => {
-      if (enquiryId) socket.to(`enquiry:${enquiryId}`).emit('enquiry:typing', { enquiryId, from: identity.context });
+    socket.on('enquiry:typing', ({ enquiryId } = {}) => {
+      const room = enquiryId ? `enquiry:${enquiryId}` : null;
+      if (room && socket.rooms.has(room)) {
+        socket.to(room).emit('enquiry:typing', { enquiryId, from: identity.context });
+      }
     });
   });
 

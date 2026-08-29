@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { BusinessType, StoreCapability } from '../../config/constants.js';
+import { BusinessType, PartnerCapability } from '../../config/constants.js';
 
 /**
  * Query contract for the public store directory. Mirrors
@@ -12,7 +12,7 @@ export const publicStoresQuerySchema = z.object({
   city: z.string().optional(),
   businessType: z.enum(Object.values(BusinessType)).optional(),
   /** What the store *does*, not what it is — see the service-type filter on petza-app's Stores tab. */
-  capability: z.enum(Object.values(StoreCapability)).optional(),
+  capability: z.enum(Object.values(PartnerCapability)).optional(),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(50).optional(),
 });

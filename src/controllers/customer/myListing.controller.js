@@ -1,7 +1,7 @@
 import { PetListingType } from '../../config/constants.js';
 import { petMediaUrl } from '../../middleware/upload.js';
-import { petCatalogService } from '../../services/partner/petCatalog.service.js';
-import { petListingService } from '../../services/partner/petListing.service.js';
+import { petCatalogService } from '../../services/shared/petCatalog.service.js';
+import { petListingService } from '../../services/shared/petListing.service.js';
 import { BadRequestError } from '../../shared/errors/AppError.js';
 import { sendSuccess } from '../../shared/response/sendResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';

@@ -3,7 +3,7 @@ import { petListingRepository } from '../../repositories/shared/petListing.repos
 import { storeRepository } from '../../repositories/shared/store.repository.js';
 import { wishlistRepository } from '../../repositories/shared/wishlist.repository.js';
 import { NotFoundError } from '../../shared/errors/AppError.js';
-import { petListingService } from '../partner/petListing.service.js';
+import { petListingService } from '../shared/petListing.service.js';
 import { storeCatalogService } from './storeCatalog.service.js';
 
 /**
@@ -15,10 +15,9 @@ import { storeCatalogService } from './storeCatalog.service.js';
  * or store looks like — the same reasoning that keeps
  * `listPublicByStore` on the pet service rather than the store one.
  *
- * A consequence worth stating: an item whose listing has since been sold,
- * archived or suspended is not returned. The wishlist row survives (the
- * partner may relist), but the screen shows what a customer can actually
- * act on today rather than a card that resolves to nothing.
+ * A sold or paused listing stays visible with its status, matching the
+ * catalogue. An explicitly archived listing or suspended store is omitted;
+ * its wishlist row survives in case the owner restores it later.
  */
 export const wishlistService = {
   /**

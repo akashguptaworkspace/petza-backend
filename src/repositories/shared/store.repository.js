@@ -2,40 +2,20 @@ import { Op } from 'sequelize';
 
 import db from '../../models/index.js';
 
-const { GroomerProfile, KennelProfile, Store, StoreKycDocument, SupplierProfile, TrainerProfile, VetProfile } = db;
+const { Store, StoreKycDocument } = db;
 
 /**
- * Every per-business-type profile, eager-loaded together. A store only
- * ever has one (its `businessType` decides which), so four of the five are
- * always null — cheaper than branching the query per type, and it lets the
- * public DTO read whichever one exists without a second round trip.
+ * Only place `stores` (and its KYC document table) is queried — services
+ * never touch the models directly.
+ *
+ * The five per-business-type profile tables this used to eager-load are
+ * gone (migration 20260829000001). They existed to feed three separate
+ * dashboards keyed by business type; there is one partner dashboard now,
+ * and what varies inside it is `offersProducts`/`offersServices`. Anything
+ * a profile row used to hold that is genuinely per-listing now lives in a
+ * listing's dynamic `attributes` instead, where admin can add to it
+ * without a migration.
  */
-const PROFILE_INCLUDE = [
-  { model: KennelProfile, as: 'kennelProfile' },
-  { model: VetProfile, as: 'vetProfile' },
-  { model: TrainerProfile, as: 'trainerProfile' },
-  { model: GroomerProfile, as: 'groomerProfile' },
-  { model: SupplierProfile, as: 'supplierProfile' },
-];
-
-/** Per-business-type profile model, keyed by `stores.business_type`. */
-const PROFILE_MODEL = {
-  KENNEL: KennelProfile,
-  VET: VetProfile,
-  TRAINER: TrainerProfile,
-  GROOMER: GroomerProfile,
-  SUPPLIER: SupplierProfile,
-};
-
-const PROFILE_ALIAS = {
-  KENNEL: 'kennelProfile',
-  VET: 'vetProfile',
-  TRAINER: 'trainerProfile',
-  GROOMER: 'groomerProfile',
-  SUPPLIER: 'supplierProfile',
-};
-
-/** Only place `stores` (and its profile/document tables) are queried — services never touch the models directly. */
 export const storeRepository = {
   findById(id, options) {
     return Store.findByPk(id, options);
@@ -45,18 +25,11 @@ export const storeRepository = {
     return Store.findOne({ where: { ownerUserId }, ...options });
   },
 
-  /** The full onboarding view: store + its KYC documents + whichever single profile its business type points at. */
-  findByOwnerUserIdWithProfile(ownerUserId) {
+  /** The full onboarding view: the store plus the documents staff review it on. */
+  findByOwnerUserIdWithDocuments(ownerUserId) {
     return Store.findOne({
       where: { ownerUserId },
-      include: [
-        { model: StoreKycDocument, as: 'kycDocuments' },
-        { model: KennelProfile, as: 'kennelProfile' },
-        { model: VetProfile, as: 'vetProfile' },
-        { model: TrainerProfile, as: 'trainerProfile' },
-        { model: GroomerProfile, as: 'groomerProfile' },
-        { model: SupplierProfile, as: 'supplierProfile' },
-      ],
+      include: [{ model: StoreKycDocument, as: 'kycDocuments' }],
     });
   },
 
@@ -73,8 +46,8 @@ export const storeRepository = {
    * decides "which are public".
    *
    * A store with no name is skipped: `stores.name` stays null between
-   * picking a business type and submitting KYC, and a nameless card is not
-   * something a customer can act on.
+   * signing up and submitting KYC, and a nameless card is not something a
+   * customer can act on.
    */
   findAndCountPublic({ statuses, search, city, businessType, capability, limit, offset }) {
     const where = {
@@ -84,23 +57,18 @@ export const storeRepository = {
     if (city) where.city = city;
     if (businessType) where.businessType = businessType;
     /**
-     * `capabilities` is a MySQL SET, so membership is `FIND_IN_SET`, not a
-     * LIKE — a LIKE on the comma-joined text would match SELL_PETS inside
-     * a hypothetical SELL_PETS_WHOLESALE. The value is bound as a
-     * replacement rather than interpolated, and the validator has already
-     * constrained it to the known enum.
+     * Filtering by what a store offers is now two plain booleans rather
+     * than `FIND_IN_SET` over a MySQL SET — the capability set became two
+     * columns in 20260829000001.
      */
-    if (capability) {
-      where[Op.and] = [Store.sequelize.literal('FIND_IN_SET(:capability, `Store`.`capabilities`)')];
-    }
+    if (capability === 'PRODUCTS') where.offersProducts = true;
+    if (capability === 'SERVICES') where.offersServices = true;
     if (search) {
       where[Op.or] = [{ name: { [Op.like]: `%${search}%` } }, { city: { [Op.like]: `%${search}%` } }];
     }
 
     return Store.findAndCountAll({
       where,
-      include: PROFILE_INCLUDE,
-      ...(capability ? { replacements: { capability } } : {}),
       // Verified partners first, then newest — an unvetted-but-active store
       // shouldn't outrank a verified one just by being created later.
       order: [
@@ -130,7 +98,6 @@ export const storeRepository = {
         status: { [Op.in]: statuses },
         name: { [Op.ne]: null },
       },
-      include: PROFILE_INCLUDE,
     });
   },
 
@@ -142,7 +109,6 @@ export const storeRepository = {
         name: { [Op.ne]: null },
         [Op.or]: [{ id: idOrSlug }, { slug: idOrSlug }],
       },
-      include: PROFILE_INCLUDE,
     });
   },
 
@@ -154,34 +120,17 @@ export const storeRepository = {
     return store.update(payload, options);
   },
 
-  /**
-   * Replaces the profile row for a business type — an upsert by store, not
-   * by primary key, so resubmitting KYC updates in place instead of piling
-   * up rows behind the profile's unique store_id.
-   */
-  async upsertProfile({ businessType, storeId, values, transaction }) {
-    const Model = PROFILE_MODEL[businessType];
-    const existing = await Model.findOne({ where: { storeId }, transaction });
-    if (existing) return existing.update(values, { transaction });
-    return Model.create({ ...values, storeId }, { transaction });
-  },
-
-  /** Used when a partner switches business type before KYC — the old type's answers no longer apply to the new one. */
-  async deleteProfilesExcept({ businessType, storeId, transaction }) {
-    const stale = Object.entries(PROFILE_MODEL).filter(([type]) => type !== businessType);
-    await Promise.all(stale.map(([, Model]) => Model.destroy({ where: { storeId }, transaction })));
-  },
-
-  profileAliasFor(businessType) {
-    return PROFILE_ALIAS[businessType];
-  },
-
   /** KYC documents are replaced wholesale on each submit — the app always posts the complete list it is showing. */
   async replaceKycDocuments({ storeId, documents, transaction }) {
     await StoreKycDocument.destroy({ where: { storeId }, transaction });
     if (!documents.length) return [];
     return StoreKycDocument.bulkCreate(
-      documents.map((document) => ({ storeId, name: document.name, fileUrl: document.uri })),
+      documents.map((document) => ({
+        storeId,
+        name: document.name,
+        fileUrl: document.uri,
+        docType: document.docType ?? 'OTHER',
+      })),
       { transaction }
     );
   },

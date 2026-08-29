@@ -6,7 +6,7 @@ import {
   petListingAnswerValue,
   petListingCoreAnswers,
   petListingMediaSchema,
-} from '../partner/petListing.validator.js';
+} from '../shared/petListing.validator.js';
 
 /**
  * Same body as a partner publishes, plus the one question only a customer

@@ -26,7 +26,7 @@ import { comparePassword, hashPassword } from '../../utils/password.js';
 const otpProviders = { EMAIL: emailOtpProvider, SMS: smsOtpProvider };
 
 /** The only roles a client can self-select via public register/OTP/Google flows — ADMIN is never client-selectable. */
-const SELF_SERVE_ROLES = { CUSTOMER: Role.CUSTOMER, PARTNER: Role.PARTNER_OWNER };
+const SELF_SERVE_ROLES = { CUSTOMER: Role.CUSTOMER, PARTNER: Role.PARTNER };
 
 /**
  * Maps the User model to the AuthUser shape petza-partner/petza-app expect
@@ -48,18 +48,20 @@ function toAuthUser(user, store) {
     avatarImage: '',
     role: RoleContext[user.role],
     ...(user.partnerStoreId ? { partnerStoreId: user.partnerStoreId } : {}),
-    // Partner-only. `businessType` is what petza-partner turns into its own
-    // KENNEL/VET/TRAINER role (the collapsed `role` above only ever says
-    // PARTNER), `capabilities` decides which of its dashboards open, and
-    // `approvalStatus` gates all of them. All three are absent until the
-    // partner picks a business type, which is exactly the state its signup
-    // flow treats as "not done yet".
+    // Admin-only, and the finer of the two: `role` says which shell of the
+    // partner app opens, `adminRole` says what that shell may touch.
+    ...(user.adminRole ? { adminRole: user.adminRole } : {}),
+    // Partner-only, and absent until the partner has said what they offer —
+    // which is exactly the state the signup flow treats as "not done yet".
+    //
+    // The two flags are what the whole partner app conditions on (§3): one
+    // dashboard for everyone, and these decide what appears inside it and
+    // whether the Products|Services segmented controls show at all.
     ...(store
       ? {
           businessType: store.businessType,
-          // What the partner app routes on: each capability is one route
-          // group it can open. A store with several opens several.
-          capabilities: store.capabilities ?? [],
+          offersProducts: store.offersProducts,
+          offersServices: store.offersServices,
           approvalStatus: StoreStatusApproval[store.status],
         }
       : {}),

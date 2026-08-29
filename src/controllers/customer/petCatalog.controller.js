@@ -1,4 +1,4 @@
-import { petListingService } from '../../services/partner/petListing.service.js';
+import { petListingService } from '../../services/shared/petListing.service.js';
 import { sendSuccess } from '../../shared/response/sendResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 

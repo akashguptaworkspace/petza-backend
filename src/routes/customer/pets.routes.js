@@ -3,17 +3,16 @@ import { Router } from 'express';
 import { getPet, listPets } from '../../controllers/customer/petCatalog.controller.js';
 import { optionalAuthenticate } from '../../middleware/authenticate.js';
 import { validate } from '../../middleware/validate.js';
-import { publicPetListingsQuerySchema } from '../../validators/partner/petListing.validator.js';
+import { publicPetListingsQuerySchema } from '../../validators/shared/petListing.validator.js';
 
 /**
  * The public pet catalogue — mounted unprefixed as `/pets`, matching
  * petza-app's own `Endpoints.pets`.
  *
  * No `authenticate`: browsing pets is open to guests, which is how a
- * shared listing link works for someone without the app. Only listings in
- * a publicly visible status are ever returned (see
- * `PubliclyVisiblePetStatuses`) — a partner's draft, sold or archived pets
- * are theirs alone.
+ * shared listing link works for someone without the app. Every non-archived
+ * listing is returned with its real availability status; ARCHIVED is the
+ * owner's explicit remove action and remains private.
  */
 export const customerPetsRouter = Router();
 

@@ -1,6 +1,7 @@
 import { Op } from 'sequelize';
 
 import db from '../../models/index.js';
+import { citiesInState } from '../../utils/indiaLocations.js';
 
 const { PetAttribute, PetAttributeOption, PetListing, PetListingAttributeValue, PetListingColor, PetListingMedia, PetType, Store, User } = db;
 
@@ -15,7 +16,11 @@ const MEDIA_ORDER = [
 const STORE_INCLUDE = {
   model: Store,
   as: 'store',
-  attributes: ['id', 'name', 'slug', 'city', 'isVerified'],
+  // `state` is selected, not just filtered on: `locationOf` labels a
+  // partner listing from its store, and without the column the DTO said
+  // `state: null` for a pet the `state=` filter had just matched — the
+  // label and the filter disagreeing about the same row.
+  attributes: ['id', 'name', 'slug', 'city', 'state', 'isVerified'],
 };
 
 /**
@@ -99,7 +104,7 @@ export const petListingRepository = {
    * the Adopt / Rehome feed from showing someone the pet they are trying
    * to rehome as though it were a pet they could take in.
    */
-  findAndCountPublic({
+  async findAndCountPublic({
     statuses,
     listingType,
     excludeOwnerId,
@@ -138,12 +143,25 @@ export const petListingRepository = {
      *
      * State is the wider net and the one the feed opens on; city narrows
      * within it. Both may be sent — a city inside a state simply intersects.
+     *
+     * The city arm of the state filter is not a nicety. A `state` column is
+     * only as good as whoever filled it in, and plenty of rows never got
+     * one: partner stores onboarded with a city alone, and listings created
+     * before the app started sending a state alongside the city. Matching
+     * "…or its city is one of the cities in that state" is what makes the
+     * feed answer the question the user actually asked — *show me pets near
+     * me* — instead of hiding a Bengaluru kennel from someone browsing
+     * Karnataka because a column was blank. `citiesInState` reads the same
+     * bundled dataset the location picker searches, so the two can't drift.
      */
     if (state) {
-      where[Op.and] = [
-        ...(where[Op.and] ?? []),
-        { [Op.or]: [{ state }, { '$store.state$': state }] },
-      ];
+      const citiesInThisState = citiesInState(state);
+      const inState = [{ state }, { '$store.state$': state }];
+      if (citiesInThisState.length) {
+        inState.push({ city: { [Op.in]: citiesInThisState } }, { '$store.city$': { [Op.in]: citiesInThisState } });
+      }
+
+      where[Op.and] = [...(where[Op.and] ?? []), { [Op.or]: inState }];
     }
     if (city) {
       where[Op.and] = [
@@ -165,22 +183,52 @@ export const petListingRepository = {
       where[Op.or] = [{ name: { [Op.like]: `%${search}%` } }, { breed: { [Op.like]: `%${search}%` } }];
     }
 
-    return PetListing.findAndCountAll({
-      where,
+    /**
+     * Paged in two steps: the ids on this page, then those ids in full.
+     *
+     * `findAndCountAll` cannot do this in one query here. `subQuery: false`
+     * is mandatory for the `$store.state$` / `$store.city$` references
+     * above to resolve — but it also drops the LIMIT into the flat joined
+     * result set, and `PUBLIC_INCLUDE` carries four hasMany associations
+     * (media, colours, attribute values and their options). One listing
+     * with three photos and five answers is fifteen joined rows, so a
+     * `limit: 20` page was returning **one or two pets out of thirteen**
+     * while `count` correctly reported all thirteen — a catalogue that
+     * looked empty the moment any filter was applied, and the reason
+     * picking a city appeared to hide every pet in it.
+     *
+     * The id query joins only `store` (a belongsTo — one row per listing,
+     * so LIMIT counts listings), and the hydrate query has no limit at all,
+     * so its joins are free to fan out.
+     */
+    const scope = { where, include: [{ ...STORE_INCLUDE, attributes: [] }], subQuery: false };
+
+    const [idRows, total] = await Promise.all([
+      PetListing.findAll({
+        ...scope,
+        attributes: ['id'],
+        order: [['createdAt', 'DESC']],
+        limit,
+        offset,
+        raw: true,
+      }),
+      PetListing.count({ ...scope, distinct: true, col: 'id' }),
+    ]);
+
+    const ids = idRows.map((row) => row.id);
+    if (!ids.length) return { rows: [], count: total };
+
+    const rows = await PetListing.findAll({
+      where: { id: { [Op.in]: ids } },
       include: PUBLIC_INCLUDE,
       order: [['createdAt', 'DESC'], ...MEDIA_ORDER],
-      limit,
-      offset,
-      // Required for the `$store.city$` reference above to resolve, and
-      // harmless otherwise: the includes are all belongsTo/hasMany on
-      // indexed keys.
-      subQuery: false,
-      distinct: true,
     });
+
+    return { rows, count: total };
   },
 
   /**
-   * How many publicly-buyable pets each of these stores has, as a
+   * How many currently available pets each of these stores has, as a
    * `{ [storeId]: count }` map — one grouped query for a whole page of
    * store cards rather than one COUNT per card.
    *
@@ -201,7 +249,7 @@ export const petListingRepository = {
   },
 
   /**
-   * Every publicly-buyable listing for one store — backs the store-details
+   * Every publicly discoverable listing for one store — backs the store-details
    * page's own pet list.
    *
    * Includes the store even though the caller already knows which store it
@@ -222,10 +270,9 @@ export const petListingRepository = {
    * — the wishlist, which stores ids and needs the listings behind them.
    *
    * Deliberately re-applies `statuses` rather than trusting the caller's
-   * ids: a saved listing that has since been sold or archived must drop
-   * out of the wishlist rather than reappear as a card that can't be
-   * bought. Includes the store for the same reason findPublicByStoreId
-   * does — the DTO renders a seller badge from it.
+   * ids: an archived listing must not reappear. Sold and paused listings
+   * are included by the public status set and render their status in the
+   * app. Includes the store for the same reason findPublicByStoreId does.
    */
   findPublicByIds({ ids, statuses }) {
     if (ids.length === 0) return Promise.resolve([]);

@@ -3,27 +3,42 @@ import { DataTypes, Model } from 'sequelize';
 import { BusinessType, StoreStatus } from '../config/constants.js';
 
 /**
- * The one row a partner resolves to — see PLATFORM_CONTEXT.md §2's
- * "one partner, many capabilities" decision: a business is never split
- * across `stores`/`vendors`/`service_providers` peer tables, it is one
- * store row plus a capability set plus a per-business-type profile
- * (kennel_profiles / vet_profiles / trainer_profiles / groomer_profiles /
- * supplier_profiles).
+ * The one row a partner resolves to. A business is never split across
+ * `stores`/`vendors`/`service_providers` peer tables — it is one store row
+ * plus two capability flags.
  *
- * Created the moment the partner picks what they do (the role screen),
- * which is *before* they have told us the business name — so `name` and
- * `slug` stay null until KYC submits them.
+ * Those flags are the whole model now (PRODUCT_CONTEXT.md §3). There used
+ * to be a `capabilities` SET and five per-business-type profile tables,
+ * and between them they decided which of three separate dashboards a
+ * partner landed in. All of it is gone: there is one partner dashboard,
+ * and `offersProducts` / `offersServices` decide what appears inside it.
+ *
+ * Created the moment the partner says what they want to offer, which is
+ * *before* they have told us the business name — so `name` and `slug`
+ * stay null until KYC submits them.
  */
 export default (sequelize) => {
   class Store extends Model {
     static associate(db) {
       Store.belongsTo(db.User, { as: 'owner', foreignKey: 'ownerUserId' });
       Store.hasMany(db.StoreKycDocument, { as: 'kycDocuments', foreignKey: 'storeId' });
-      Store.hasOne(db.KennelProfile, { as: 'kennelProfile', foreignKey: 'storeId' });
-      Store.hasOne(db.VetProfile, { as: 'vetProfile', foreignKey: 'storeId' });
-      Store.hasOne(db.TrainerProfile, { as: 'trainerProfile', foreignKey: 'storeId' });
-      Store.hasOne(db.GroomerProfile, { as: 'groomerProfile', foreignKey: 'storeId' });
-      Store.hasOne(db.SupplierProfile, { as: 'supplierProfile', foreignKey: 'storeId' });
+      Store.hasMany(db.ProductListing, { as: 'productListings', foreignKey: 'storeId' });
+      Store.hasMany(db.ServiceListing, { as: 'serviceListings', foreignKey: 'storeId' });
+      Store.hasMany(db.Order, { as: 'orders', foreignKey: 'storeId' });
+      Store.hasMany(db.Booking, { as: 'bookings', foreignKey: 'storeId' });
+      Store.hasMany(db.WalletTransaction, { as: 'walletTransactions', foreignKey: 'storeId' });
+      Store.hasMany(db.PayoutAccount, { as: 'payoutAccounts', foreignKey: 'storeId' });
+      Store.hasMany(db.Review, { as: 'reviews', foreignKey: 'storeId' });
+    }
+
+    /**
+     * True when the partner has both capabilities on — the one condition
+     * that makes the app show its Products|Services and Orders|Bookings
+     * segmented controls (§3). A partner with one capability never sees a
+     * segment they can't use.
+     */
+    get hasBothCapabilities() {
+      return this.offersProducts && this.offersServices;
     }
   }
 
@@ -34,7 +49,7 @@ export default (sequelize) => {
         defaultValue: DataTypes.UUIDV4,
         primaryKey: true,
       },
-      /** Exactly one owner per store — a PARTNER_OWNER user. Managers/staff attach through their own table later, not here. */
+      /** Exactly one owner per store — a PARTNER user. Managers/staff attach through their own table later, not here. */
       ownerUserId: {
         type: DataTypes.UUID,
         allowNull: false,
@@ -50,33 +65,37 @@ export default (sequelize) => {
         allowNull: true,
         unique: true,
       },
-      /** What this partner does — decides their dashboard. No PET_SHOP member by design; see config/constants.js. */
+      /**
+       * The *shape* of the business, for KYC paperwork and admin
+       * filtering. Deliberately decides nothing about navigation any more
+       * — that is what the two flags below are for.
+       */
       businessType: {
         type: DataTypes.ENUM(...Object.values(BusinessType)),
         allowNull: false,
+        defaultValue: BusinessType.INDIVIDUAL,
       },
       /**
-       * Which pillars this store runs — the partner app opens one route
-       * group per capability. Derived server-side from businessType
-       * (BusinessTypeCapabilities) at signup and widened only through
-       * PATCH /partner/store/capabilities; never taken from a client as-is.
-       *
-       * The column is a MySQL `SET`, which Sequelize has no DataType for —
-       * the driver hands it over as a comma-joined string either way, so
-       * it is declared as STRING here and the getter/setter do the one
-       * translation, keeping every caller in arrays.
+       * Sells pet supplies. Chosen at signup and widened later through the
+       * "grow your business" flow.
        */
-      capabilities: {
-        type: DataTypes.STRING,
+      offersProducts: {
+        type: DataTypes.BOOLEAN,
         allowNull: false,
-        defaultValue: '',
-        get() {
-          const raw = this.getDataValue('capabilities');
-          return raw ? String(raw).split(',') : [];
-        },
-        set(value) {
-          this.setDataValue('capabilities', Array.isArray(value) ? value.join(',') : (value ?? ''));
-        },
+        defaultValue: false,
+      },
+      /**
+       * Offers bookable services.
+       *
+       * Widening only, in both directions of the pair: turning a
+       * capability off would orphan live bookings and in-flight orders, so
+       * a partner winding down pauses their listings instead. Nothing in
+       * the API sets either flag back to false (§3).
+       */
+      offersServices: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
       },
       status: {
         type: DataTypes.ENUM(...Object.values(StoreStatus)),
@@ -86,6 +105,11 @@ export default (sequelize) => {
       /** The human Petza staff verify the documents against — distinct from `User.name`, which may be a nickname. */
       ownerName: {
         type: DataTypes.STRING,
+        allowNull: true,
+      },
+      /** Street line, collected on the KYC form alongside city/state/pincode. */
+      address: {
+        type: DataTypes.TEXT,
         allowNull: true,
       },
       city: {

@@ -11,7 +11,7 @@ import {
 } from '../../controllers/customer/myListing.controller.js';
 import { uploadPetMedia } from '../../middleware/upload.js';
 import { validate } from '../../middleware/validate.js';
-import { formSchemaQuerySchema } from '../../validators/partner/petCatalog.validator.js';
+import { formSchemaQuerySchema } from '../../validators/shared/petCatalog.validator.js';
 import {
   createMyListingSchema,
   listMyListingsQuerySchema,

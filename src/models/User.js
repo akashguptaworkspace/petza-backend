@@ -1,6 +1,6 @@
 import { Model, DataTypes } from 'sequelize';
 
-import { Role } from '../config/constants.js';
+import { AdminRole, Role } from '../config/constants.js';
 
 export default (sequelize) => {
   class User extends Model {}
@@ -34,9 +34,20 @@ export default (sequelize) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      /** Which app this account belongs to — CUSTOMER, PARTNER or ADMIN, and nothing finer. */
       role: {
         type: DataTypes.ENUM(...Object.values(Role)),
         allowNull: false,
+      },
+      /**
+       * Which slice of the admin console this admin may touch. Null for
+       * every non-ADMIN account — the sub-role lives here rather than as
+       * more `role` members so that "which app" and "what may they do"
+       * stop being the same field (see migration 20260829000008).
+       */
+      adminRole: {
+        type: DataTypes.ENUM(...Object.values(AdminRole)),
+        allowNull: true,
       },
       status: {
         type: DataTypes.ENUM('ACTIVE', 'INACTIVE', 'SUSPENDED'),

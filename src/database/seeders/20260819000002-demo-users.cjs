@@ -51,7 +51,7 @@ module.exports = {
         email: 'partner@petza.app',
         phone: null,
         password_hash: await bcrypt.hash('partner123', 10),
-        role: 'PARTNER_OWNER',
+        role: 'PARTNER',
         status: 'ACTIVE',
         partner_store_id: uuidv4(),
         created_at: now,

@@ -7,17 +7,17 @@ export const getOnboarding = asyncHandler(async (req, res) => {
   sendSuccess(res, { message: 'Onboarding state fetched successfully', data });
 });
 
-export const selectBusinessType = asyncHandler(async (req, res) => {
-  const data = await partnerOnboardingService.selectBusinessType({
+export const selectCapabilities = asyncHandler(async (req, res) => {
+  const data = await partnerOnboardingService.selectCapabilities({
     userId: req.user.id,
-    businessType: req.body.businessType,
+    capabilities: req.body.capabilities,
   });
-  sendSuccess(res, { message: 'Business type saved successfully', data });
+  sendSuccess(res, { message: 'Saved what you offer on Petza', data });
 });
 
 export const submitKyc = asyncHandler(async (req, res) => {
   const data = await partnerOnboardingService.submitKyc(req.user.id, req.body);
-  sendSuccess(res, { statusCode: 201, message: 'Details submitted for review', data });
+  sendSuccess(res, { statusCode: 201, message: 'Business details saved successfully', data });
 });
 
 export const getApprovalStatus = asyncHandler(async (req, res) => {

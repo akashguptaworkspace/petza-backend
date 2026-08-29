@@ -1,16 +1,17 @@
 import { z } from 'zod';
 
-import { BusinessType } from '../../config/constants.js';
+import { BusinessType, KycDocType, PartnerCapability } from '../../config/constants.js';
 
 /**
- * Mirrors petza-partner's `SignupRole` union exactly — three business
- * types, no PET_SHOP (a pet shop signs up as a KENNEL; see
- * config/constants.js).
+ * "What do you want to offer on Petza?" — the signup capability screen
+ * (PRODUCT_CONTEXT.md §3). At least one, at most both.
+ *
+ * There is no way to express turning a capability *off*, here or anywhere
+ * else: doing so would orphan live bookings and in-flight orders, so the
+ * service refuses it and the schema has no shape for it.
  */
-const businessType = z.enum(Object.values(BusinessType));
-
-export const selectBusinessTypeSchema = z.object({
-  businessType,
+export const selectCapabilitiesSchema = z.object({
+  capabilities: z.array(z.enum(Object.values(PartnerCapability))).min(1, 'Choose at least one').max(2),
 });
 
 /** The app picks documents off the device, so `uri` is a local/remote file URI until the media-upload pipeline lands. */
@@ -18,70 +19,31 @@ const kycDocument = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1).max(255),
   uri: z.string().trim().min(1),
+  /** What the upload proves — decides which slot it fills on the KYC screen and what staff check it against. */
+  docType: z.enum(Object.values(KycDocType)).default(KycDocType.OTHER),
 });
 
-/** `yearsActive`, `experienceYears` and `travelRadiusKm` arrive as strings (text inputs) and are parsed to integers in the service. */
-const numericText = z.string().trim().max(10).regex(/^\d*$/, 'Must be a number').optional();
-
-const kycBase = {
-  ownerName: z.string().trim().min(1, 'Owner name is required').max(120),
-  city: z.string().trim().min(1, 'City is required').max(120),
-  documents: z.array(kycDocument).max(20).default([]),
-};
-
 /**
- * One schema per business type, discriminated on `role` — a vet must not
- * be able to submit a kennel's fields, and each type's required fields are
- * genuinely different, so a single merged schema with everything optional
- * would validate nothing.
+ * One KYC form for every partner.
+ *
+ * This used to be a discriminated union of five schemas, one per business
+ * type, because a vet's required fields genuinely differed from a
+ * kennel's. Those differences turned out to be per-*listing* facts — a
+ * vet's specialisations, a groomer's coat types — and they now live in
+ * each category's `category_attributes` (§4), where admin can add to them
+ * without a migration or a release. What is left is the set of things
+ * every business has: a name, an owner, an address, and proof of both.
+ *
+ * `businessType` is still asked, but it now only tells staff what
+ * paperwork to expect. It decides nothing about navigation.
  */
-export const submitKycSchema = z.discriminatedUnion('role', [
-  z.object({
-    ...kycBase,
-    role: z.literal(BusinessType.KENNEL),
-    kennelName: z.string().trim().min(1, 'Kennel name is required').max(160),
-    yearsActive: numericText,
-    registrationNumber: z.string().trim().max(60).optional(),
-    pincode: z.string().trim().max(10).optional(),
-    breeds: z.array(z.string().trim().min(1)).max(30).default([]),
-  }),
-  z.object({
-    ...kycBase,
-    role: z.literal(BusinessType.VET),
-    clinicName: z.string().trim().min(1, 'Clinic name is required').max(160),
-    councilRegistrationNumber: z.string().trim().max(60).optional(),
-    services: z.array(z.string().trim().min(1)).max(30).default([]),
-  }),
-  z.object({
-    ...kycBase,
-    role: z.literal(BusinessType.SUPPLIER),
-    storeName: z.string().trim().min(1, 'Store name is required').max(160),
-    /** A trading business is verified on its GST registration rather than a professional licence. */
-    gstNumber: z.string().trim().max(20).optional(),
-    warehouseCity: z.string().trim().max(120).optional(),
-    brandsStocked: z.array(z.string().trim().min(1)).max(50).default([]),
-    categories: z.array(z.string().trim().min(1)).max(20).default([]),
-    shipsNationwide: z.boolean().default(false),
-  }),
-  z.object({
-    ...kycBase,
-    role: z.literal(BusinessType.GROOMER),
-    salonName: z.string().trim().min(1, 'Business name is required').max(160),
-    experienceYears: numericText,
-    /** A mobile groomer travels to the pet; a salon does not. */
-    isMobile: z.boolean().default(false),
-    services: z.array(z.string().trim().min(1)).max(30).default([]),
-    petTypes: z.array(z.string().trim().min(1)).max(10).default([]),
-  }),
-  z.object({
-    ...kycBase,
-    role: z.literal(BusinessType.TRAINER),
-    businessName: z.string().trim().min(1, 'Business name is required').max(160),
-    experienceYears: numericText,
-    certificationBody: z.string().trim().max(60).optional(),
-    certificationNumber: z.string().trim().max(60).optional(),
-    baseArea: z.string().trim().max(120).optional(),
-    travelRadiusKm: numericText,
-    trainingOffered: z.array(z.string().trim().min(1)).max(30).default([]),
-  }),
-]);
+export const submitKycSchema = z.object({
+  businessName: z.string().trim().min(1, 'Business name is required').max(160),
+  businessType: z.enum(Object.values(BusinessType)),
+  ownerName: z.string().trim().min(1, 'Owner name is required').max(120),
+  address: z.string().trim().max(300).optional(),
+  city: z.string().trim().min(1, 'City is required').max(120),
+  state: z.string().trim().max(120).optional(),
+  pincode: z.string().trim().max(12).optional(),
+  documents: z.array(kycDocument).max(20).default([]),
+});

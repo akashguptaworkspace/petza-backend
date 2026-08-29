@@ -3,11 +3,11 @@ import { Router } from 'express';
 import {
   getApprovalStatus,
   getOnboarding,
-  selectBusinessType,
+  selectCapabilities,
   submitKyc,
 } from '../../controllers/partner/onboarding.controller.js';
 import { validate } from '../../middleware/validate.js';
-import { selectBusinessTypeSchema, submitKycSchema } from '../../validators/partner/onboarding.validator.js';
+import { selectCapabilitiesSchema, submitKycSchema } from '../../validators/partner/onboarding.validator.js';
 
 /**
  * Everything between "verified my OTP" and "my dashboard opens".
@@ -23,6 +23,6 @@ import { selectBusinessTypeSchema, submitKycSchema } from '../../validators/part
 export const partnerOnboardingRouter = Router();
 
 partnerOnboardingRouter.get('/', getOnboarding);
-partnerOnboardingRouter.post('/business-type', validate(selectBusinessTypeSchema), selectBusinessType);
+partnerOnboardingRouter.post('/capabilities', validate(selectCapabilitiesSchema), selectCapabilities);
 partnerOnboardingRouter.post('/kyc', validate(submitKycSchema), submitKyc);
 partnerOnboardingRouter.get('/approval-status', getApprovalStatus);
